@@ -1,0 +1,8 @@
+{
+    "uuid": "systeminfo@pleumchill",
+    "name": "System Info",
+    "description": "Show device info in panel",
+    "version": 1,
+    "shell-version": ["45", "46"],
+    "url": "https://github.com/LalaloyXyz/Device-info"
+}
