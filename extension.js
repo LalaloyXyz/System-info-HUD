@@ -112,7 +112,8 @@ export default class mainShow extends Extension {
         const topLeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.06));
         const top1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.18));
 
-        const topRightColumn = this._createColumn_height(Math.floor(popupHeight * 0.06));
+        const topRightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
+        const top1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
 
         this._enableDrag(this._main_screen);
 
@@ -127,7 +128,6 @@ export default class mainShow extends Extension {
 
         // user profile
         const userName = GLib.get_user_name();
-        const DeviceName = GLib.get_host_name();
         const profileImagePath = `/var/lib/AccountsService/icons/${userName}`;
         const avatarSize = Math.floor(popupHeight * 0.18);
 
@@ -155,7 +155,7 @@ export default class mainShow extends Extension {
 
         profileRow.add_child(profileBin);
 
-        const labelBox = new St.BoxLayout({
+        const Left_label_1 = new St.BoxLayout({
             vertical: true,
             x_expand: true,
             y_align: Clutter.ActorAlign.END,
@@ -181,15 +181,42 @@ export default class mainShow extends Extension {
 
         deviceNameRow.add_child(this._deviceWithUptime);
 
-        labelBox.add_child(deviceLabel);
-        labelBox.add_child(deviceNameRow);
+        Left_label_1.add_child(deviceLabel);
+        Left_label_1.add_child(deviceNameRow);
 
-        profileRow.add_child(labelBox);
+        profileRow.add_child(Left_label_1);
 
         top1_LeftColumn.add_child(profileRow);
 
         // right column
         rightColumn.add_child(topRightColumn);
+        rightColumn.add_child(top1_RightColumn);
+
+        const Right_label_1 = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            y_align: Clutter.ActorAlign.END,
+            style: 'padding-bottom: 10px;',
+        });
+        
+        const { osName, osType, kernelVersion } = this._getSystemInfo();
+
+        const device_OS = new St.Label({
+            text: `OS : ${osName} [${osType}]`,
+            style: 'color: white; font-weight: bold; font-size: 18px;',
+            x_align: Clutter.ActorAlign.START,
+        });
+
+        const device_Kernel = new St.Label({
+            text: `Kernel : ${kernelVersion}`,
+            style: 'color: white; font-weight: bold; font-size: 16px;',
+            x_align: Clutter.ActorAlign.START,
+        });
+
+        Right_label_1.add_child(device_OS);
+        Right_label_1.add_child(device_Kernel);
+        
+        top1_RightColumn.add_child(Right_label_1);
 
         this._main_screen.set_size(popupWidth, popupHeight);
 
@@ -233,6 +260,43 @@ export default class mainShow extends Extension {
 
         return true;
     }
+
+    _getSystemInfo() {
+        let osName = 'Unknown OS';
+        try {
+            const [ok, osReleaseContent] = GLib.file_get_contents('/etc/os-release');
+            if (ok) {
+                const lines = imports.byteArray.toString(osReleaseContent).split('\n');
+                for (const line of lines) {
+                    if (line.startsWith('PRETTY_NAME=')) {
+                        osName = line.split('=')[1].replace(/"/g, '');
+                        break;
+                    }
+                }
+            }
+        } catch (e) {
+            log('Failed to read /etc/os-release: ' + e.message);
+        }
+    
+        let osType = 'Unknown Arch';
+        try {
+            const [, archOut] = GLib.spawn_command_line_sync('uname -m');
+            osType = imports.byteArray.toString(archOut).trim();
+        } catch (e) {
+            log('Failed to get OS architecture: ' + e.message);
+        }
+    
+        let kernelVersion = 'Unknown Kernel';
+        try {
+            const [, stdout] = GLib.spawn_command_line_sync('uname -r');
+            kernelVersion = imports.byteArray.toString(stdout).trim();
+        } catch (e) {
+            log('Failed to get kernel version: ' + e.message);
+        }
+    
+        return { osName, osType, kernelVersion };
+    }
+    
 
     _destroyMainScreen() {
         if (this._uptimeTimeoutId) {
