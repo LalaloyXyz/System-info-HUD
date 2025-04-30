@@ -111,6 +111,8 @@ export default class mainShow extends Extension {
 
         const topLeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.06));
         const top1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.18));
+        const space1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
+        const top2_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.08));
 
         const topRightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
         const top1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
@@ -122,9 +124,11 @@ export default class mainShow extends Extension {
         this._main_screen.add_child(centerSpacer);
         this._main_screen.add_child(rightColumn);
 
-        // left column
+        // left column -----------------------------------------------//
         leftColumn.add_child(topLeftColumn);
         leftColumn.add_child(top1_LeftColumn);
+        leftColumn.add_child(space1_LeftColumn);
+        leftColumn.add_child(top2_LeftColumn);
 
         // user profile
         const userName = GLib.get_user_name();
@@ -175,7 +179,6 @@ export default class mainShow extends Extension {
         this._deviceWithUptime = new St.Label({
             text: 'Loading uptime...',
             style: 'color: white; font-weight: bold; font-size: 18px;',
-            y_align: Clutter.ActorAlign.CENTER,
             x_align: Clutter.ActorAlign.START,
         });
 
@@ -188,17 +191,38 @@ export default class mainShow extends Extension {
 
         top1_LeftColumn.add_child(profileRow);
 
-        // right column
+        // IP row
+        const ipRow = new St.BoxLayout({ vertical: false });
+        ipRow.add_child(new St.Label({
+            text: 'IP Address : ',
+            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
+        }));
+        ipRow.add_child(new St.Label({
+            text: this._getLanIPAddress(),
+            style: 'color:white; font-weight:bold; font-size:14px;'
+        }));
+        top2_LeftColumn.add_child(ipRow);
+
+        // Wi-Fi row
+        const { download, upload } = this._getNetworkSpeed();
+        const wifiLabel = new St.Label({
+            text: 'WiFi ssid : ',
+            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
+        });
+        this._wifiSpeedLabel = new St.Label({
+            text: `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`,
+            style: 'color:white; font-weight:bold; font-size:14px;'
+        });
+        const wifiRow = new St.BoxLayout({ vertical: false });
+        wifiRow.add_child(wifiLabel);
+        wifiRow.add_child(this._wifiSpeedLabel);
+        top2_LeftColumn.add_child(wifiRow);
+
+        // right column -----------------------------------------------//
         rightColumn.add_child(topRightColumn);
         rightColumn.add_child(top1_RightColumn);
-
-        const Right_label_1 = new St.BoxLayout({
-            vertical: true,
-            x_expand: true,
-            y_align: Clutter.ActorAlign.END,
-            style: 'padding-bottom: 10px;',
-        });
         
+        // systemInfo
         const { osName, osType, kernelVersion } = this._getSystemInfo();
 
         const device_OS = new St.Label({
@@ -212,11 +236,11 @@ export default class mainShow extends Extension {
             style: 'color: white; font-weight: bold; font-size: 16px;',
             x_align: Clutter.ActorAlign.START,
         });
-
-        Right_label_1.add_child(device_OS);
-        Right_label_1.add_child(device_Kernel);
         
-        top1_RightColumn.add_child(Right_label_1);
+        top1_RightColumn.add_child(device_OS);
+        top1_RightColumn.add_child(device_Kernel);
+
+        //
 
         this._main_screen.set_size(popupWidth, popupHeight);
 
@@ -238,6 +262,7 @@ export default class mainShow extends Extension {
 
         this._updateUptime();
         this._uptimeTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateUptime());
+        this._wifiSpeedTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateWifiSpeed());
     }
 
     _updateUptime() {
@@ -258,6 +283,12 @@ export default class mainShow extends Extension {
             log('Failed to update uptime: ' + e.message);
         }
 
+        return true;
+    }
+
+    _updateWifiSpeed() {
+        const { download, upload } = this._getNetworkSpeed();
+        this._wifiSpeedLabel.text = `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`;
         return true;
     }
 
@@ -297,13 +328,101 @@ export default class mainShow extends Extension {
         return { osName, osType, kernelVersion };
     }
     
+    _getLanIPAddress() {
+        try {
+            const [ok, out] = GLib.spawn_command_line_sync("ip route get 1.1.1.1");
+            if (ok) {
+                const output = imports.byteArray.toString(out);
+                const match = output.match(/src (\d+\.\d+\.\d+\.\d+)/);
+                if (match) {
+                    return match[1];
+                }
+            }
+        } catch (e) {
+            log('Failed to get LAN IP: ' + e.message);
+        }
+        return 'Unknown IP';
+    }    
+
+    _getWifiSSID() {
+        try {
+            const [ok, out] = GLib.spawn_command_line_sync("iwgetid -r");
+            if (ok) {
+                return imports.byteArray.toString(out).trim() || "Not connected";
+            }
+        } catch (e) {
+            log('Failed to get SSID: ' + e.message);
+        }
+        return 'Unknown Wi-Fi';
+    }    
+
+    _getNetworkSpeed() {
+        try {
+            const [ok, data] = GLib.file_get_contents('/proc/net/dev');
+            if (!ok) throw new Error("Failed to read /proc/net/dev");
+    
+            const lines = data.toString().split('\n').slice(2); // Skip headers
+            let activeIface = null;
+            let maxTraffic = 0;
+            let rx = 0, tx = 0;
+    
+            for (const line of lines) {
+                const parts = line.trim().split(/[:\s]+/);
+                if (parts.length < 10) continue;
+    
+                const iface = parts[0];
+                const ifaceRx = parseInt(parts[1], 10);
+                const ifaceTx = parseInt(parts[9], 10);
+    
+                if (iface === 'lo' || (ifaceRx === 0 && ifaceTx === 0)) continue;
+    
+                const traffic = ifaceRx + ifaceTx;
+                if (traffic > maxTraffic) {
+                    maxTraffic = traffic;
+                    activeIface = iface;
+                    rx = ifaceRx;
+                    tx = ifaceTx;
+                }
+            }
+    
+            const now = Date.now();
+            let down = '0', up = '0';
+    
+            if (this._lastTimestamp && activeIface === this._lastIface) {
+                const dt = (now - this._lastTimestamp) / 1000;
+                down = this._formatSpeed((rx - this._lastRx) / dt);
+                up = this._formatSpeed((tx - this._lastTx) / dt);
+            }
+    
+            this._lastIface = activeIface;
+            this._lastRx = rx;
+            this._lastTx = tx;
+            this._lastTimestamp = now;
+    
+            return { download: down, upload: up };
+        } catch (e) {
+            log('NetSpeed error: ' + e.message);
+            return { download: '0', upload: '0' };
+        }
+    }
+    
+    _formatSpeed(bps) {
+        if (bps > 1024 * 1024)
+            return (bps / (1024 * 1024)).toFixed(2) + ' MB/s';
+        if (bps > 1024)
+            return (bps / 1024).toFixed(2) + ' kB/s';
+        return bps.toFixed(2) + ' B/s';
+    }    
 
     _destroyMainScreen() {
         if (this._uptimeTimeoutId) {
             GLib.source_remove(this._uptimeTimeoutId);
             this._uptimeTimeoutId = null;
         }
-
+        if (this._wifiSpeedTimeoutId) {
+            GLib.source_remove(this._wifiSpeedTimeoutId);
+            this._wifiSpeedTimeoutId = null;
+        }
         if (this._main_screen) {
             Main.layoutManager.removeChrome(this._main_screen);
             this._main_screen.destroy();
@@ -312,13 +431,10 @@ export default class mainShow extends Extension {
     }
 
     disable() {
-        if (this._uptimeTimeoutId) {
-            GLib.source_remove(this._uptimeTimeoutId);
-            this._uptimeTimeoutId = null;
-        }
-
-        this._indicator?.destroy();
-        this._indicator = null;
         this._destroyMainScreen();
+        if (this._indicator) {
+            this._indicator.destroy();
+            this._indicator = null;
+        }
     }
 }
