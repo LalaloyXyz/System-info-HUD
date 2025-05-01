@@ -35,6 +35,7 @@ export default class mainShow extends Extension {
         this._deviceWithUptime = null;
     }
 
+    // ========== UI COMPONENT HELPERS ========== //
     _createColumn_width(width, backgroundColor = 'transparent') {
         const column = new St.BoxLayout({
             vertical: true,
@@ -91,180 +92,7 @@ export default class mainShow extends Extension {
         });
     }
 
-    _showMainScreen() {
-        const monitor = Main.layoutManager.primaryMonitor;
-        const popupWidth = Math.floor(monitor.width * 0.4);
-        const popupHeight = Math.floor(monitor.height * 0.4);
-
-        this._main_screen = new St.BoxLayout({
-            vertical: false,
-            style: 'background-color: #212121; border-radius: 40px;',
-            reactive: true,
-            can_focus: true,
-            track_hover: true,
-        });
-
-        const frontColumn = this._createColumn_width(Math.floor(popupWidth * 0.05));
-        const leftColumn = this._createColumn_width(Math.floor(popupWidth * 0.43));
-        const centerSpacer = this._createColumn_width(Math.floor(popupWidth * 0.1));
-        const rightColumn = this._createColumn_width(Math.floor(popupWidth * 0.42));
-
-        const topLeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.06));
-        const top1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.18));
-        const space1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
-        const top2_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.08));
-
-        const topRightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
-        const top1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
-
-        this._enableDrag(this._main_screen);
-
-        this._main_screen.add_child(frontColumn);
-        this._main_screen.add_child(leftColumn);
-        this._main_screen.add_child(centerSpacer);
-        this._main_screen.add_child(rightColumn);
-
-        // left column -----------------------------------------------//
-        leftColumn.add_child(topLeftColumn);
-        leftColumn.add_child(top1_LeftColumn);
-        leftColumn.add_child(space1_LeftColumn);
-        leftColumn.add_child(top2_LeftColumn);
-
-        // user profile
-        const userName = GLib.get_user_name();
-        const profileImagePath = `/var/lib/AccountsService/icons/${userName}`;
-        const avatarSize = Math.floor(popupHeight * 0.18);
-
-        const profileRow = new St.BoxLayout({
-            vertical: false,
-            x_align: Clutter.ActorAlign.START,
-            y_align: Clutter.ActorAlign.CENTER,
-            reactive: true,
-            can_focus: true,
-            track_hover: true,
-        });
-
-        const profileBin = new St.Bin({
-            width: avatarSize,
-            height: avatarSize,
-            style: `
-                background-image: url("file://${profileImagePath}");
-                background-size: cover;
-                background-position: center;
-                border-radius: 360px;
-                border: 3px solid white;
-            `,
-            clip_to_allocation: true,
-        });
-
-        profileRow.add_child(profileBin);
-
-        const Left_label_1 = new St.BoxLayout({
-            vertical: true,
-            x_expand: true,
-            y_align: Clutter.ActorAlign.END,
-            style: 'padding-left: 20px;',
-        });
-
-        const deviceLabel = new St.Label({
-            text: `Device name`,
-            style: 'color: white; font-weight: bold; font-size: 14px;',
-        });
-
-        const deviceNameRow = new St.BoxLayout({
-            vertical: false,
-            x_align: Clutter.ActorAlign.START,
-        });
-
-        this._deviceWithUptime = new St.Label({
-            text: 'Loading uptime...',
-            style: 'color: white; font-weight: bold; font-size: 18px;',
-            x_align: Clutter.ActorAlign.START,
-        });
-
-        deviceNameRow.add_child(this._deviceWithUptime);
-
-        Left_label_1.add_child(deviceLabel);
-        Left_label_1.add_child(deviceNameRow);
-
-        profileRow.add_child(Left_label_1);
-
-        top1_LeftColumn.add_child(profileRow);
-
-        // IP row
-        const ipRow = new St.BoxLayout({ vertical: false });
-        ipRow.add_child(new St.Label({
-            text: 'IP Address : ',
-            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
-        }));
-        ipRow.add_child(new St.Label({
-            text: this._getLanIPAddress(),
-            style: 'color:white; font-weight:bold; font-size:14px;'
-        }));
-        top2_LeftColumn.add_child(ipRow);
-
-        // Wi-Fi row
-        const { download, upload } = this._getNetworkSpeed();
-        const wifiLabel = new St.Label({
-            text: 'WiFi ssid : ',
-            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
-        });
-        this._wifiSpeedLabel = new St.Label({
-            text: `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`,
-            style: 'color:white; font-weight:bold; font-size:14px;'
-        });
-        const wifiRow = new St.BoxLayout({ vertical: false });
-        wifiRow.add_child(wifiLabel);
-        wifiRow.add_child(this._wifiSpeedLabel);
-        top2_LeftColumn.add_child(wifiRow);
-
-        // right column -----------------------------------------------//
-        rightColumn.add_child(topRightColumn);
-        rightColumn.add_child(top1_RightColumn);
-        
-        // systemInfo
-        const { osName, osType, kernelVersion } = this._getSystemInfo();
-
-        const device_OS = new St.Label({
-            text: `OS : ${osName} [${osType}]`,
-            style: 'color: white; font-weight: bold; font-size: 18px;',
-            x_align: Clutter.ActorAlign.START,
-        });
-
-        const device_Kernel = new St.Label({
-            text: `Kernel : ${kernelVersion}`,
-            style: 'color: white; font-weight: bold; font-size: 16px;',
-            x_align: Clutter.ActorAlign.START,
-        });
-        
-        top1_RightColumn.add_child(device_OS);
-        top1_RightColumn.add_child(device_Kernel);
-
-        //
-
-        this._main_screen.set_size(popupWidth, popupHeight);
-
-        Main.layoutManager.addChrome(this._main_screen, {
-            trackFullscreen: true,
-        });
-
-        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-            if (!this._main_screen) return GLib.SOURCE_REMOVE;
-
-            const [_, natWidth] = this._main_screen.get_preferred_width(-1);
-            const [__, natHeight] = this._main_screen.get_preferred_height(-1);
-            const x = Math.floor((monitor.width - natWidth) / 2) + monitor.x;
-            const y = Math.floor((monitor.height - natHeight) / 2) + monitor.y;
-
-            this._main_screen.set_position(x, y);
-            return GLib.SOURCE_REMOVE;
-        });
-
-        this._updateUptime();
-        this._uptimeTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateUptime());
-        this._wifiSpeedTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateWifiSpeed());
-    }
-
+    // ========== DATA FETCHERS ========== //
     _updateUptime() {
         try {
             const [ok, contents] = GLib.file_get_contents('/proc/uptime');
@@ -283,12 +111,6 @@ export default class mainShow extends Extension {
             log('Failed to update uptime: ' + e.message);
         }
 
-        return true;
-    }
-
-    _updateWifiSpeed() {
-        const { download, upload } = this._getNetworkSpeed();
-        this._wifiSpeedLabel.text = `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`;
         return true;
     }
 
@@ -361,7 +183,7 @@ export default class mainShow extends Extension {
             const [ok, data] = GLib.file_get_contents('/proc/net/dev');
             if (!ok) throw new Error("Failed to read /proc/net/dev");
     
-            const lines = data.toString().split('\n').slice(2); // Skip headers
+            const lines = data.toString().split('\n').slice(2);
             let activeIface = null;
             let maxTraffic = 0;
             let rx = 0, tx = 0;
@@ -414,6 +236,305 @@ export default class mainShow extends Extension {
         return bps.toFixed(2) + ' B/s';
     }    
 
+    _updateWifiSpeed() {
+        const { download, upload } = this._getNetworkSpeed();
+        this._wifiSpeedLabel.text = `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`;
+        return true;
+    }
+
+    _getCPUInfo() {
+        try {
+            let [ok, out] = GLib.file_get_contents('/proc/cpuinfo');
+            if (!ok) return;
+    
+            let text = out.toString();
+            let modelMatch = text.match(/^model name\s+:\s+(.+)$/m);
+            let modelName = modelMatch ? modelMatch[1].trim() : "Unknown";
+    
+            let coreSpeeds = {};
+            let processorIds = [];
+            let coreIdMap = {};
+            let lines = text.split('\n');
+            let currentProcessorId = null;
+    
+            for (let line of lines) {
+                if (line.startsWith('processor')) {
+                    currentProcessorId = line.split(':')[1].trim();
+                    processorIds.push(currentProcessorId);
+                } else if (line.startsWith('core id') && currentProcessorId !== null) {
+                    let coreId = line.split(':')[1].trim();
+                    coreIdMap[currentProcessorId] = coreId;
+                } else if (line.startsWith('cpu MHz') && currentProcessorId !== null) {
+                    let speed = line.split(':')[1].trim();
+                    coreSpeeds[currentProcessorId] = Math.floor(parseFloat(speed));
+                }
+            }
+    
+            let [res, sensorOut, err, status] = GLib.spawn_command_line_sync("sensors");
+            let sensorText = sensorOut.toString();
+            let coreTemps = {};
+            let coreTempRegex = /^Core\s+(\d+):\s+\+([\d.]+)°C/mg;
+            let match;
+            while ((match = coreTempRegex.exec(sensorText)) !== null) {
+                let id = match[1];
+                let temp = parseFloat(match[2]);
+                coreTemps[id] = temp.toFixed(1);
+            }
+
+            let result = [];
+            processorIds.sort((a, b) => parseInt(a) - parseInt(b)).forEach((pid) => {
+                let cpuName = `core-${String(pid).padStart(2, '0')}    [`;
+                let speed = coreSpeeds[pid] || "N/A";
+                let coreId = coreIdMap[pid] || "0";
+                let temp = coreTemps[coreId] || "N/A";
+
+                let speedEmoji = "⬜";
+                if (speed >= 3000) speedEmoji = "🟥";
+                else if (speed >= 2250) speedEmoji = "🟧";
+                else if (speed >= 1500) speedEmoji = "🟨";
+                else if (speed >= 750) speedEmoji = "🟩";
+                else speedEmoji = "⬜️";
+    
+                let tempEmoji = "⚪";
+                if (temp !== "N/A") {
+                    let tempNum = parseFloat(temp);
+                    if (tempNum >= 80) tempEmoji = "🔴";
+                    else if (tempNum >= 70) tempEmoji = "🟠";
+                    else if (tempNum >= 60) tempEmoji = "🟡";
+                    else if (tempNum >= 50) tempEmoji = "🟢";
+                    else if (tempNum >= 40) tempEmoji = "⚪️";
+                    else tempEmoji = "🔵";
+                }
+    
+                let speedStr = `${speed} MHz`.padEnd(10);
+                let tempStr = `]    ${tempEmoji} temp   [ ${temp}°C ]`;
+    
+                if (speed < 1000) result.push(`${speedEmoji} ${cpuName}       ${speedStr}   ${tempStr}`);
+                             else result.push(`${speedEmoji} ${cpuName}     ${speedStr}    ${tempStr}`);
+            });
+    
+            return {
+                cpu: modelName,
+                core: processorIds.length,
+                coreSpeeds: result.join('\n')
+            };
+    
+        } catch (e) {
+            logError(e);
+        }
+    }
+
+    _updateCPUInfo() {
+        let cpuInfo = this._getCPUInfo();
+        if (cpuInfo) {
+            this._cpuCore.text = cpuInfo.coreSpeeds;
+        }
+        return true;
+    }
+
+    // ========== MAIN SCREEN UI ========== //
+    _showMainScreen() {
+        const monitor = Main.layoutManager.primaryMonitor;
+        const popupWidth = Math.floor(monitor.width * 0.4);
+        const popupHeight = Math.floor(monitor.height * 0.4);
+
+        this._main_screen = new St.BoxLayout({
+            vertical: false,
+            style: 'background-color: #212121; border-radius: 40px;',
+            reactive: true,
+            can_focus: true,
+            track_hover: true,
+        });
+
+        // ========== CREATE COLUMN ========== //
+        const frontColumn = this._createColumn_width(Math.floor(popupWidth * 0.05));
+        const leftColumn = this._createColumn_width(Math.floor(popupWidth * 0.50));
+        const rightColumn = this._createColumn_width(Math.floor(popupWidth * 0.45));
+
+        // ========== CREATE LEFT ========== //
+        const topLeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.06));
+        const top1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.18));
+        const space1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
+        const top2_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
+        const space2_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.025));
+        const top3_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.585));
+
+        // ========== CREATE RIGHT ========== //
+        const topRightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
+        const top1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
+
+        this._enableDrag(this._main_screen);
+
+        this._main_screen.add_child(frontColumn);
+        this._main_screen.add_child(leftColumn);
+        this._main_screen.add_child(rightColumn);
+
+        // ========== LEFT COLUMN ========== //
+        leftColumn.add_child(topLeftColumn);
+        leftColumn.add_child(top1_LeftColumn);
+        leftColumn.add_child(space1_LeftColumn);
+        leftColumn.add_child(top2_LeftColumn);
+        leftColumn.add_child(space2_LeftColumn);
+        leftColumn.add_child(top3_LeftColumn);
+
+        // ========== DEVICE PROFILE ========== //
+        const userName = GLib.get_user_name();
+        const profileImagePath = `/var/lib/AccountsService/icons/${userName}`;
+        const avatarSize = Math.floor(popupHeight * 0.18);
+
+        const profileRow = new St.BoxLayout({
+            vertical: false,
+            x_align: Clutter.ActorAlign.START,
+            y_align: Clutter.ActorAlign.CENTER,
+            reactive: true,
+            can_focus: true,
+            track_hover: true,
+        });
+
+        const profileBin = new St.Bin({
+            width: avatarSize,
+            height: avatarSize,
+            style: `
+                background-image: url("file://${profileImagePath}");
+                background-size: cover;
+                background-position: center;
+                border-radius: 360px;
+                border: 3px solid white;
+            `,
+            clip_to_allocation: true,
+        });
+
+        profileRow.add_child(profileBin);
+
+        const Left_label_1 = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            y_align: Clutter.ActorAlign.END,
+            style: 'padding-left: 20px;',
+        });
+
+        const deviceLabel = new St.Label({
+            text: `Device name`,
+            style: 'color: white; font-weight: bold; font-size: 14px;',
+        });
+
+        const deviceNameRow = new St.BoxLayout({
+            vertical: false,
+            x_align: Clutter.ActorAlign.START,
+        });
+
+        this._deviceWithUptime = new St.Label({
+            text: 'Loading uptime...',
+            style: 'color: white; font-weight: bold; font-size: 18px;',
+            x_align: Clutter.ActorAlign.START,
+        });
+
+        deviceNameRow.add_child(this._deviceWithUptime);
+
+        Left_label_1.add_child(deviceLabel);
+        Left_label_1.add_child(deviceNameRow);
+
+        profileRow.add_child(Left_label_1);
+
+        top1_LeftColumn.add_child(profileRow);
+
+        // ========== DEVICE IP ========== //
+        const ipRow = new St.BoxLayout({ vertical: false });
+
+        ipRow.add_child(new St.Label({
+            text: 'IP Address : ',
+            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
+        }));
+        ipRow.add_child(new St.Label({
+            text: this._getLanIPAddress(),
+            style: 'color:white; font-weight:bold; font-size:14px;'
+        }));
+
+        top2_LeftColumn.add_child(ipRow);
+
+        // ========== DEVICE WIFI ========== //
+        const { download, upload } = this._getNetworkSpeed();
+
+        const wifiLabel = new St.Label({
+            text: 'WiFi ssid : ',
+            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
+        });
+        this._wifiSpeedLabel = new St.Label({
+            text: `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`,
+            style: 'color:white; font-weight:bold; font-size:14px;'
+        });
+        const wifiRow = new St.BoxLayout({ vertical: false });
+
+        wifiRow.add_child(wifiLabel);
+        wifiRow.add_child(this._wifiSpeedLabel);
+        top2_LeftColumn.add_child(wifiRow);
+
+        // ========== DEVICE CPU ========== //
+        const {cpu, core, coreSpeeds} = this._getCPUInfo();
+
+        const cpuHead = new St.Label({
+            text: 'Processor',
+            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
+        });
+        const cpuName = new St.Label({
+            text: `${cpu} x${core}`,
+            style: 'color: white; font-weight:bold; font-size:14px;'
+        });
+        this._cpuCore = new St.Label({
+            text: `${coreSpeeds}`,
+            style: 'font:monospace; color: white; font-weight:bold; font-size:11px;'
+        });
+
+        top3_LeftColumn.add_child(cpuHead);
+        top3_LeftColumn.add_child(cpuName);
+        top3_LeftColumn.add_child(this._cpuCore);
+
+        // ========== RIGHT COLUMN ========== //
+        rightColumn.add_child(topRightColumn);
+        rightColumn.add_child(top1_RightColumn);
+        
+        // ========== SYSTEM INFO ========== //
+        const { osName, osType, kernelVersion } = this._getSystemInfo();
+
+        const device_OS = new St.Label({
+            text: `OS : ${osName} [${osType}]`,
+            style: 'color: white; font-weight: bold; font-size: 18px;',
+            x_align: Clutter.ActorAlign.START,
+        });
+
+        const device_Kernel = new St.Label({
+            text: `Kernel : ${kernelVersion}`,
+            style: 'color: white; font-weight: bold; font-size: 16px;',
+            x_align: Clutter.ActorAlign.START,
+        });
+        
+        top1_RightColumn.add_child(device_OS);
+        top1_RightColumn.add_child(device_Kernel);
+
+        // ========== END UI ========== //
+        this._main_screen.set_size(popupWidth, popupHeight);
+
+        Main.layoutManager.addChrome(this._main_screen, {
+            trackFullscreen: true,
+        });
+
+        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            if (!this._main_screen) return GLib.SOURCE_REMOVE;
+
+            const [_, natWidth] = this._main_screen.get_preferred_width(-1);
+            const [__, natHeight] = this._main_screen.get_preferred_height(-1);
+            const x = Math.floor((monitor.width - natWidth) / 2) + monitor.x;
+            const y = Math.floor((monitor.height - natHeight) / 2) + monitor.y;
+
+            this._main_screen.set_position(x, y);
+            return GLib.SOURCE_REMOVE;
+        });
+
+        this._uptimeTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateUptime());
+        this._wifiSpeedTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateWifiSpeed());
+        this._cpuUpdateTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateCPUInfo());
+    }
+
     _destroyMainScreen() {
         if (this._uptimeTimeoutId) {
             GLib.source_remove(this._uptimeTimeoutId);
@@ -422,6 +543,10 @@ export default class mainShow extends Extension {
         if (this._wifiSpeedTimeoutId) {
             GLib.source_remove(this._wifiSpeedTimeoutId);
             this._wifiSpeedTimeoutId = null;
+        }
+        if (this._cpuUpdateTimeoutId) {
+            GLib.source_remove(this._cpuUpdateTimeoutId);
+            this._cpuUpdateTimeoutId = null;
         }
         if (this._main_screen) {
             Main.layoutManager.removeChrome(this._main_screen);
