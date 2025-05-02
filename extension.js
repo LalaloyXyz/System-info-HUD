@@ -280,14 +280,14 @@ export default class mainShow extends Extension {
                 let temp = parseFloat(match[2]);
                 coreTemps[id] = temp.toFixed(1);
             }
-
+    
             let result = [];
             processorIds.sort((a, b) => parseInt(a) - parseInt(b)).forEach((pid) => {
                 let cpuName = `core-${String(pid).padStart(2, '0')}    [`;
                 let speed = coreSpeeds[pid] || "N/A";
                 let coreId = coreIdMap[pid] || "0";
                 let temp = coreTemps[coreId] || "N/A";
-
+    
                 let speedEmoji = "⬜";
                 if (speed >= 3000) speedEmoji = "🟥";
                 else if (speed >= 2250) speedEmoji = "🟧";
@@ -295,15 +295,15 @@ export default class mainShow extends Extension {
                 else if (speed >= 750) speedEmoji = "🟩";
                 else speedEmoji = "⬜️";
     
-                let tempEmoji = "⚪";
+                let tempEmoji = "⬜️";
                 if (temp !== "N/A") {
                     let tempNum = parseFloat(temp);
-                    if (tempNum >= 80) tempEmoji = "🔴";
-                    else if (tempNum >= 70) tempEmoji = "🟠";
-                    else if (tempNum >= 60) tempEmoji = "🟡";
-                    else if (tempNum >= 50) tempEmoji = "🟢";
-                    else if (tempNum >= 40) tempEmoji = "⚪️";
-                    else tempEmoji = "🔵";
+                    if (tempNum >= 80) tempEmoji = "🟥";
+                    else if (tempNum >= 70) tempEmoji = "🟧";
+                    else if (tempNum >= 55) tempEmoji = "🟨";
+                    else if (tempNum >= 40) tempEmoji = "🟩";
+                    else if (tempNum >= 30) tempEmoji = "⬜️";
+                    else tempEmoji = "🟦";
                 }
     
                 let speedStr = `${speed} MHz`.padEnd(10);
@@ -316,21 +316,29 @@ export default class mainShow extends Extension {
             return {
                 cpu: modelName,
                 core: processorIds.length,
-                coreSpeeds: result.join('\n')
+                coreSpeeds: result
             };
     
         } catch (e) {
             logError(e);
         }
-    }
+    }    
 
     _updateCPUInfo() {
         let cpuInfo = this._getCPUInfo();
         if (cpuInfo) {
-            this._cpuCore.text = cpuInfo.coreSpeeds;
+            this._coreBox.destroy_all_children();
+            cpuInfo.coreSpeeds.forEach((line) => {
+                const label = new St.Label({
+                    text: line,
+                    style: 'font:monospace; color: white; font-weight:bold; font-size:11px;',
+                    x_expand: true
+                });
+                this._coreBox.add_child(label);
+            });
         }
         return true;
-    }
+    }    
 
     // ========== MAIN SCREEN UI ========== //
     _showMainScreen() {
@@ -348,8 +356,9 @@ export default class mainShow extends Extension {
 
         // ========== CREATE COLUMN ========== //
         const frontColumn = this._createColumn_width(Math.floor(popupWidth * 0.05));
-        const leftColumn = this._createColumn_width(Math.floor(popupWidth * 0.50));
+        const leftColumn = this._createColumn_width(Math.floor(popupWidth * 0.45));
         const rightColumn = this._createColumn_width(Math.floor(popupWidth * 0.45));
+        const backColumn = this._createColumn_width(Math.floor(popupWidth * 0.05));
 
         // ========== CREATE LEFT ========== //
         const topLeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.06));
@@ -357,17 +366,19 @@ export default class mainShow extends Extension {
         const space1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
         const top2_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
         const space2_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.025));
-        const top3_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.585));
 
         // ========== CREATE RIGHT ========== //
         const topRightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
         const top1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
+        const space1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
+        const top2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.4));
 
         this._enableDrag(this._main_screen);
 
         this._main_screen.add_child(frontColumn);
         this._main_screen.add_child(leftColumn);
         this._main_screen.add_child(rightColumn);
+        this._main_screen.add_child(backColumn);
 
         // ========== LEFT COLUMN ========== //
         leftColumn.add_child(topLeftColumn);
@@ -375,7 +386,6 @@ export default class mainShow extends Extension {
         leftColumn.add_child(space1_LeftColumn);
         leftColumn.add_child(top2_LeftColumn);
         leftColumn.add_child(space2_LeftColumn);
-        leftColumn.add_child(top3_LeftColumn);
 
         // ========== DEVICE PROFILE ========== //
         const userName = GLib.get_user_name();
@@ -469,29 +479,11 @@ export default class mainShow extends Extension {
         wifiRow.add_child(this._wifiSpeedLabel);
         top2_LeftColumn.add_child(wifiRow);
 
-        // ========== DEVICE CPU ========== //
-        const {cpu, core, coreSpeeds} = this._getCPUInfo();
-
-        const cpuHead = new St.Label({
-            text: 'Processor',
-            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
-        });
-        const cpuName = new St.Label({
-            text: `${cpu} x${core}`,
-            style: 'color: white; font-weight:bold; font-size:14px;'
-        });
-        this._cpuCore = new St.Label({
-            text: `${coreSpeeds}`,
-            style: 'font:monospace; color: white; font-weight:bold; font-size:11px;'
-        });
-
-        top3_LeftColumn.add_child(cpuHead);
-        top3_LeftColumn.add_child(cpuName);
-        top3_LeftColumn.add_child(this._cpuCore);
-
         // ========== RIGHT COLUMN ========== //
         rightColumn.add_child(topRightColumn);
         rightColumn.add_child(top1_RightColumn);
+        rightColumn.add_child(space1_RightColumn);
+        rightColumn.add_child(top2_RightColumn);
         
         // ========== SYSTEM INFO ========== //
         const { osName, osType, kernelVersion } = this._getSystemInfo();
@@ -503,13 +495,53 @@ export default class mainShow extends Extension {
         });
 
         const device_Kernel = new St.Label({
-            text: `Kernel : ${kernelVersion}`,
+            text: `Kernel : Linux ${kernelVersion}`,
             style: 'color: white; font-weight: bold; font-size: 16px;',
             x_align: Clutter.ActorAlign.START,
         });
         
         top1_RightColumn.add_child(device_OS);
         top1_RightColumn.add_child(device_Kernel);
+
+        // ========== DEVICE CPU ========== //
+        const {cpu, core, coreSpeeds} = this._getCPUInfo();
+
+        const cpuHead = new St.Label({
+            text: 'Processor',
+            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
+        });
+        const cpuName = new St.Label({
+            text: `${cpu} x${core}`,
+            style: 'color: white; font-weight:bold; font-size:14px;'
+        });
+
+        this._coreBox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            y_expand: true
+        });
+
+        const scrollView = new St.ScrollView({
+            style_class: 'custom-scroll',
+            overlay_scrollbars: true,
+            enable_mouse_scrolling: true,
+            x_expand: true,
+            y_expand: true
+        });
+        scrollView.set_child(this._coreBox);
+        
+        coreSpeeds.forEach((line) => {
+            const label = new St.Label({
+                text: line,
+                style: 'font:monospace; color: white; font-weight:bold; font-size:11px;',
+                x_expand: true
+            });
+            this._coreBox.add_child(label);
+        });
+
+        top2_RightColumn.add_child(cpuHead);
+        top2_RightColumn.add_child(cpuName);
+        top2_RightColumn.add_child(scrollView);
 
         // ========== END UI ========== //
         this._main_screen.set_size(popupWidth, popupHeight);
@@ -532,7 +564,7 @@ export default class mainShow extends Extension {
 
         this._uptimeTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateUptime());
         this._wifiSpeedTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateWifiSpeed());
-        this._cpuUpdateTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateCPUInfo());
+        this._cpuUpdateTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, this._updateCPUInfo.bind(this));
     }
 
     _destroyMainScreen() {
