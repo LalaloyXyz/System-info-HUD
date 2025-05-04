@@ -7,6 +7,23 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 export default class mainShow extends Extension {
     enable() {
+        // Initialize cache
+        this._cache = {
+            gpuInfo: { data: null, timestamp: 0 },
+            cpuInfo: { data: null, timestamp: 0 },
+            systemInfo: { data: null, timestamp: 0 },
+            networkInterface: { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 }
+        };
+
+        this._cacheTTL = {
+            gpuInfo: 5000,
+            cpuInfo: 2000,
+            systemInfo: 60000,
+            wifiSSID: 10000
+        };
+
+        this._updateFrequency = 1;
+
         this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
         this._indicator.add_style_class_name('panel-button');
 
@@ -114,6 +131,21 @@ export default class mainShow extends Extension {
         return true;
     }
 
+    _getCachedSystemInfo() {
+        const now = Date.now();
+        if (this._cache.systemInfo.data && 
+            now - this._cache.systemInfo.timestamp < this._cacheTTL.systemInfo) {
+            return this._cache.systemInfo.data;
+        }
+
+        const systemInfo = this._getSystemInfo();
+        this._cache.systemInfo = {
+            data: systemInfo,
+            timestamp: now
+        };
+        return systemInfo;
+    }
+
     _getSystemInfo() {
         let osName = 'Unknown OS';
         try {
@@ -210,16 +242,18 @@ export default class mainShow extends Extension {
             const now = Date.now();
             let down = '0', up = '0';
     
-            if (this._lastTimestamp && activeIface === this._lastIface) {
-                const dt = (now - this._lastTimestamp) / 1000;
-                down = this._formatSpeed((rx - this._lastRx) / dt);
-                up = this._formatSpeed((tx - this._lastTx) / dt);
+            if (this._cache.networkInterface.lastTimestamp && activeIface === this._cache.networkInterface.lastIface) {
+                const dt = (now - this._cache.networkInterface.lastTimestamp) / 1000;
+                down = this._formatSpeed((rx - this._cache.networkInterface.lastRx) / dt);
+                up = this._formatSpeed((tx - this._cache.networkInterface.lastTx) / dt);
             }
     
-            this._lastIface = activeIface;
-            this._lastRx = rx;
-            this._lastTx = tx;
-            this._lastTimestamp = now;
+            this._cache.networkInterface = {
+                lastIface: activeIface,
+                lastRx: rx,
+                lastTx: tx,
+                lastTimestamp: now
+            };
     
             return { download: down, upload: up };
         } catch (e) {
@@ -240,6 +274,21 @@ export default class mainShow extends Extension {
         const { download, upload } = this._getNetworkSpeed();
         this._wifiSpeedLabel.text = `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`;
         return true;
+    }
+
+    _getCachedCPUInfo() {
+        const now = Date.now();
+        if (this._cache.cpuInfo.data && 
+            now - this._cache.cpuInfo.timestamp < this._cacheTTL.cpuInfo) {
+            return this._cache.cpuInfo.data;
+        }
+
+        const cpuInfo = this._getCPUInfo();
+        this._cache.cpuInfo = {
+            data: cpuInfo,
+            timestamp: now
+        };
+        return cpuInfo;
     }
 
     _getCPUInfo() {
@@ -283,7 +332,7 @@ export default class mainShow extends Extension {
     
             let result = [];
             processorIds.sort((a, b) => parseInt(a) - parseInt(b)).forEach((pid) => {
-                let cpuName = `core-${String(pid).padStart(2, '0')}    [`;
+                let coreName = `Core-${String(pid).padStart(2, '0')}    [`;
                 let speed = coreSpeeds[pid] || "N/A";
                 let coreId = coreIdMap[pid] || "0";
                 let temp = coreTemps[coreId] || "N/A";
@@ -307,10 +356,10 @@ export default class mainShow extends Extension {
                 }
     
                 let speedStr = `${speed} MHz`.padEnd(10);
-                let tempStr = `]    ${tempEmoji} temp   [ ${temp}°C ]`;
+                let tempStr = `]    ${tempEmoji} Temp   [ ${temp}°C ]`;
     
-                if (speed < 1000) result.push(`${speedEmoji} ${cpuName}       ${speedStr}   ${tempStr}`);
-                             else result.push(`${speedEmoji} ${cpuName}     ${speedStr}    ${tempStr}`);
+                if (speed < 1000) result.push(`${speedEmoji} ${coreName}       ${speedStr}   ${tempStr}`);
+                             else result.push(`${speedEmoji} ${coreName}     ${speedStr}    ${tempStr}`);
             });
     
             return {
@@ -325,7 +374,7 @@ export default class mainShow extends Extension {
     }    
 
     _updateCPUInfo() {
-        let cpuInfo = this._getCPUInfo();
+        let cpuInfo = this._getCachedCPUInfo();
         if (cpuInfo) {
             this._coreBox.destroy_all_children();
             cpuInfo.coreSpeeds.forEach((line) => {
@@ -338,7 +387,135 @@ export default class mainShow extends Extension {
             });
         }
         return true;
-    }    
+    }  
+    
+    _getCachedGpuInfo() {
+        const now = Date.now();
+        if (this._cache.gpuInfo.data && 
+            now - this._cache.gpuInfo.timestamp < this._cacheTTL.gpuInfo) {
+            return this._cache.gpuInfo.data;
+        }
+
+        const gpuInfo = this._getGpuInfo();
+        this._cache.gpuInfo = {
+            data: gpuInfo,
+            timestamp: now
+        };
+        return gpuInfo;
+    }
+
+    _getGpuInfo() {
+        const ByteArray = imports.byteArray;
+    
+        try {
+            let resultList = [];
+    
+            // Check for NVIDIA
+            let [nvidiaOk, nvidiaOut] = GLib.spawn_command_line_sync("sh -c \"command -v nvidia-smi\"");
+            if (nvidiaOk && nvidiaOut && ByteArray.toString(nvidiaOut).trim() !== "") {
+                let [ok, out] = GLib.spawn_command_line_sync("sh -c \"nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu --format=csv,noheader,nounits\"");
+                if (ok && out) {
+                    let nvidiaData = ByteArray.toString(out).trim().split('\n');
+                    nvidiaData.forEach(line => {
+                        let [name, total, used, temp] = line.split(',').map(s => s.trim());
+    
+                        let load = Math.round((parseInt(used) / parseInt(total)) * 100);
+    
+                        let loadEmoji = "⬜️";
+                        if (load >= 80) loadEmoji = "🟥";
+                        else if (load >= 60) loadEmoji = "🟧";
+                        else if (load >= 50) loadEmoji = "🟨";
+                        else if (load >= 40) loadEmoji = "🟩";
+                        else loadEmoji = "⬜️";
+    
+                        let tempEmoji = "⬜️";
+                        if (temp !== "N/A") {
+                            let tempNum = parseFloat(temp);
+                            if (tempNum >= 80) tempEmoji = "🟥";
+                            else if (tempNum >= 70) tempEmoji = "🟧";
+                            else if (tempNum >= 55) tempEmoji = "🟨";
+                            else if (tempNum >= 40) tempEmoji = "🟩";
+                            else tempEmoji = "⬜️";
+                        }
+    
+                        resultList.push(`GPU${resultList.length} - [ ${name} ]\n${loadEmoji} [ VRAM : ${used}MB / ${total}MB ] [${load}%] ${tempEmoji} Temp [${temp}°C]`);
+                    });
+                }
+            }
+    
+            // Check for AMD
+            let [amdToolOk, amdToolOut] = GLib.spawn_command_line_sync("sh -c \"command -v rocm-smi\"");
+            if (amdToolOk && amdToolOut && ByteArray.toString(amdToolOut).trim() !== "") {
+                let [ok, out] = GLib.spawn_command_line_sync("sh -c \"rocm-smi --showproductname --showmemuse --json\"");
+                if (ok && out) {
+                    let jsonStr = ByteArray.toString(out).trim();
+                    let amdInfo = JSON.parse(jsonStr);
+                    for (let key in amdInfo) {
+                        let gpu = amdInfo[key];
+                        if (gpu["Card series"]) {
+                            let name = gpu["Card series"];
+                            let used = parseInt(gpu["VRAM Used Memory (B)"]) / (1024 * 1024);
+                            let total = parseInt(gpu["VRAM Total Memory (B)"]) / (1024 * 1024);
+                            let temp = gpu["Temperature (C)"];
+    
+                            let load = Math.round((used / total) * 100);
+    
+                            let loadEmoji = "⬜️";
+                            if (load >= 80) loadEmoji = "🟥";
+                            else if (load >= 60) loadEmoji = "🟧";
+                            else if (load >= 50) loadEmoji = "🟨";
+                            else if (load >= 40) loadEmoji = "🟩";
+                            else loadEmoji = "⬜️";
+    
+                            let tempEmoji = "⬜️";
+                            if (temp !== "N/A") {
+                                let tempNum = parseFloat(temp);
+                                if (tempNum >= 80) tempEmoji = "🟥";
+                                else if (tempNum >= 70) tempEmoji = "🟧";
+                                else if (tempNum >= 55) tempEmoji = "🟨";
+                                else if (tempNum >= 40) tempEmoji = "🟩";
+                                else tempEmoji = "⬜️";
+                            }
+    
+                            resultList.push(`GPU${resultList.length} - [ ${name} ]\n${loadEmoji} [ VRAM : ${Math.round(used)}MB / ${Math.round(total)}MB ] [${load}%] ${tempEmoji} Temp [${temp}°C]`);
+                        }
+                    }
+                }
+            }
+    
+            let [intelOk, intelOut] = GLib.spawn_command_line_sync("sh -c \"lspci | grep -i 'VGA' | grep -i 'Intel'\"");
+            if (intelOk && intelOut) {
+                let intelData = ByteArray.toString(intelOut).trim();
+                if (intelData !== "") {
+                    let matches = intelData.match(/\[([^\]]+)\] \((rev [^\)]+)\)/);
+                    if (matches && matches.length >= 3) {
+                        let gpuModel = matches[1];
+                        resultList.push(`GPU${resultList.length} - [ ${gpuModel} ]`);
+                    }
+                }
+            }
+
+            if (resultList.length === 0) {
+                let [pciOk, pciOut] = GLib.spawn_command_line_sync("sh -c \"lspci | grep -E 'VGA|3D'\"");
+                if (pciOk && pciOut) {
+                    let output = ByteArray.toString(pciOut).trim();
+                    if (output !== "") {
+                        resultList = output.split('\n').map(line => line.replace(/.*: /, ''));
+                    }
+                }
+            }
+    
+            return resultList.length > 0 ? resultList.join('\n\n') : 'GPU info not available (sudo or drivers may be required)';
+        } catch (e) {
+            logError(`Error fetching GPU info: ${e}`);
+            return 'Error fetching GPU info';
+        }
+    }           
+
+    _updateGpuData() {
+        this._gpuData.text = this._getCachedGpuInfo();
+        return true;
+    }
 
     // ========== MAIN SCREEN UI ========== //
     _showMainScreen() {
@@ -372,6 +549,8 @@ export default class mainShow extends Extension {
         const top1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
         const space1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
         const top2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.4));
+        const space2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.025));
+        const top3_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.2));
 
         this._enableDrag(this._main_screen);
 
@@ -434,7 +613,7 @@ export default class mainShow extends Extension {
         });
 
         this._deviceWithUptime = new St.Label({
-            text: 'Loading uptime...',
+            text: 'Loading ...',
             style: 'color: white; font-weight: bold; font-size: 18px;',
             x_align: Clutter.ActorAlign.START,
         });
@@ -453,7 +632,7 @@ export default class mainShow extends Extension {
 
         ipRow.add_child(new St.Label({
             text: 'IP Address : ',
-            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
+            style: 'color:rgb(180, 180, 180); font-weight:bold; font-size:13px;'
         }));
         ipRow.add_child(new St.Label({
             text: this._getLanIPAddress(),
@@ -467,7 +646,7 @@ export default class mainShow extends Extension {
 
         const wifiLabel = new St.Label({
             text: 'WiFi ssid : ',
-            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
+            style: 'color:rgb(180, 180, 180); font-weight:bold; font-size:13px;'
         });
         this._wifiSpeedLabel = new St.Label({
             text: `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`,
@@ -484,6 +663,8 @@ export default class mainShow extends Extension {
         rightColumn.add_child(top1_RightColumn);
         rightColumn.add_child(space1_RightColumn);
         rightColumn.add_child(top2_RightColumn);
+        rightColumn.add_child(space2_RightColumn);
+        rightColumn.add_child(top3_RightColumn);
         
         // ========== SYSTEM INFO ========== //
         const { osName, osType, kernelVersion } = this._getSystemInfo();
@@ -508,7 +689,7 @@ export default class mainShow extends Extension {
 
         const cpuHead = new St.Label({
             text: 'Processor',
-            style: 'color:rgb(141,141,141); font-weight:bold; font-size:13px;'
+            style: 'color:rgb(180, 180, 180); font-weight:bold; font-size:13px;'
         });
         const cpuName = new St.Label({
             text: `${cpu} x${core}`,
@@ -543,6 +724,20 @@ export default class mainShow extends Extension {
         top2_RightColumn.add_child(cpuName);
         top2_RightColumn.add_child(scrollView);
 
+        // ========== DEVICE GPU ========== //
+        const gpuHead = new St.Label({
+            text: 'Graphics',
+            style: 'color:rgb(180, 180, 180); font-weight:bold; font-size:13px;'
+        });
+        
+        this._gpuData = new St.Label({
+            text: this._getGpuInfo(),
+            style: 'color: white; font-weight:bold; font-size:11px;'
+        });
+
+        top3_RightColumn.add_child(gpuHead);
+        top3_RightColumn.add_child(this._gpuData);
+
         // ========== END UI ========== //
         this._main_screen.set_size(popupWidth, popupHeight);
 
@@ -562,24 +757,21 @@ export default class mainShow extends Extension {
             return GLib.SOURCE_REMOVE;
         });
 
-        this._uptimeTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateUptime());
-        this._wifiSpeedTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => this._updateWifiSpeed());
-        this._cpuUpdateTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, this._updateCPUInfo.bind(this));
+        this._updateTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this._updateFrequency, () => {
+            this._updateUptime();
+            this._updateWifiSpeed();
+            this._updateCPUInfo();
+            this._updateGpuData();
+            return true;
+        });
     }
 
     _destroyMainScreen() {
-        if (this._uptimeTimeoutId) {
-            GLib.source_remove(this._uptimeTimeoutId);
-            this._uptimeTimeoutId = null;
+        if (this._updateTimeoutId) {
+            GLib.source_remove(this._updateTimeoutId);
+            this._updateTimeoutId = null;
         }
-        if (this._wifiSpeedTimeoutId) {
-            GLib.source_remove(this._wifiSpeedTimeoutId);
-            this._wifiSpeedTimeoutId = null;
-        }
-        if (this._cpuUpdateTimeoutId) {
-            GLib.source_remove(this._cpuUpdateTimeoutId);
-            this._cpuUpdateTimeoutId = null;
-        }
+        
         if (this._main_screen) {
             Main.layoutManager.removeChrome(this._main_screen);
             this._main_screen.destroy();
