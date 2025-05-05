@@ -1,28 +1,41 @@
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+const ByteArray = imports.byteArray;
 
 export default class mainShow extends Extension {
     enable() {
-        // Initialize cache
         this._cache = {
             gpuInfo: { data: null, timestamp: 0 },
             cpuInfo: { data: null, timestamp: 0 },
             systemInfo: { data: null, timestamp: 0 },
-            networkInterface: { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 }
+            networkInterface: { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 },
+            themeColors: { background: null, text: null, secondaryText: null, accent: null }
         };
 
         this._cacheTTL = {
             gpuInfo: 5000,
             cpuInfo: 2000,
             systemInfo: 60000,
-            wifiSSID: 10000
+            wifiSSID: 10000,
+            themeColors: 5000
         };
 
         this._updateFrequency = 1;
+
+        this._themeSettings = new Gio.Settings({
+            schema_id: 'org.gnome.desktop.interface'
+        });
+        this._themeChangeSignal = this._themeSettings.connect('changed::gtk-theme', 
+            this._onThemeChanged.bind(this));
+        this._colorSchemeChangeSignal = this._themeSettings.connect('changed::color-scheme',
+            this._onThemeChanged.bind(this));
+            
+        this._updateThemeColors();
 
         this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
         this._indicator.add_style_class_name('panel-button');
@@ -52,11 +65,51 @@ export default class mainShow extends Extension {
         this._deviceWithUptime = null;
     }
 
+    _updateThemeColors() {
+        const currentTime = Date.now();
+        if (this._cache.themeColors.timestamp && 
+            currentTime - this._cache.themeColors.timestamp < this._cacheTTL.themeColors) {
+            return this._cache.themeColors;
+        }
+        
+        const colorScheme = this._themeSettings.get_string('color-scheme');
+        const isDarkTheme = colorScheme === 'prefer-dark';
+
+        const backgroundColor = isDarkTheme ? '#212121' : '#f5f5f5';
+        const textColor = isDarkTheme ? 'white' : 'black';
+        const secondaryTextColor = isDarkTheme ? 'rgb(180, 180, 180)' : 'rgb(100, 100, 100)';
+        const accentColor = isDarkTheme ? 'black' : 'white';
+
+        this._cache.themeColors = {
+            background: backgroundColor,
+            text: textColor,
+            secondaryText: secondaryTextColor,
+            accent: accentColor,
+            isDark: isDarkTheme,
+            timestamp: currentTime
+        };
+        
+        return this._cache.themeColors;
+    }
+    
+    _onThemeChanged() {
+        this._cache.themeColors.timestamp = 0;
+        this._updateThemeColors();
+
+        if (this._main_screen) {
+            this._destroyMainScreen();
+            this._showMainScreen();
+        }
+    }
+
     // ========== UI COMPONENT HELPERS ========== //
-    _createColumn_width(width, backgroundColor = 'transparent') {
+    _createColumn_width(width, backgroundColor = null) {
+        const themeColors = this._updateThemeColors();
+        const bgColor = backgroundColor || 'transparent';
+        
         const column = new St.BoxLayout({
             vertical: true,
-            style: `background-color: ${backgroundColor}; border: 0px solid white;`,
+            style: `background-color: ${bgColor}; border: 0px solid ${themeColors.accent};`,
             reactive: true,
             can_focus: true,
             track_hover: true,
@@ -65,10 +118,13 @@ export default class mainShow extends Extension {
         return column;
     }
 
-    _createColumn_height(height, backgroundColor = 'transparent') {
+    _createColumn_height(height, backgroundColor = null) {
+        const themeColors = this._updateThemeColors();
+        const bgColor = backgroundColor || 'transparent';
+        
         const column = new St.BoxLayout({
             vertical: true,
-            style: `background-color: ${backgroundColor}; border: 0px solid white;`,
+            style: `background-color: ${bgColor}; border: 0px solid ${themeColors.accent};`,
             reactive: true,
             can_focus: true,
             track_hover: true,
@@ -110,26 +166,31 @@ export default class mainShow extends Extension {
     }
 
     // ========== DATA FETCHERS ========== //
-    _updateUptime() {
+    _getUptime() {
         try {
             const [ok, contents] = GLib.file_get_contents('/proc/uptime');
             if (ok) {
                 const uptimeSeconds = parseFloat(imports.byteArray.toString(contents).split(' ')[0]);
-                const hours = Math.floor(uptimeSeconds / 3600);
+                const days = Math.floor(uptimeSeconds / 86400);
+                const hours = Math.floor((uptimeSeconds % 86400) / 3600);
                 const minutes = Math.floor((uptimeSeconds % 3600) / 60);
                 const seconds = Math.floor(uptimeSeconds % 60);
-
+    
                 const DeviceName = GLib.get_host_name();
-                if (this._deviceWithUptime) {
-                    this._deviceWithUptime.text = `${DeviceName} : ${hours}H ${minutes}M ${seconds}s`;
-                }
+                return `${DeviceName} : ${days}d ${hours}h ${minutes}m ${seconds}s`;
             }
         } catch (e) {
-            log('Failed to update uptime: ' + e.message);
+            log('Failed to get uptime: ' + e.message);
         }
-
-        return true;
+        return 'Unknown uptime';
     }
+
+    _updateUptime() {
+        if (this._deviceWithUptime) {
+            this._deviceWithUptime.text = this._getUptime();
+        }
+        return true;
+    }    
 
     _getCachedSystemInfo() {
         const now = Date.now();
@@ -380,7 +441,7 @@ export default class mainShow extends Extension {
             cpuInfo.coreSpeeds.forEach((line) => {
                 const label = new St.Label({
                     text: line,
-                    style: 'font:monospace; color: white; font-weight:bold; font-size:11px;',
+                    style: `font-weight: bold; font-size: 11px;`,
                     x_expand: true
                 });
                 this._coreBox.add_child(label);
@@ -516,16 +577,17 @@ export default class mainShow extends Extension {
         this._gpuData.text = this._getCachedGpuInfo();
         return true;
     }
-
+    
     // ========== MAIN SCREEN UI ========== //
     _showMainScreen() {
+        const themeColors = this._updateThemeColors();
         const monitor = Main.layoutManager.primaryMonitor;
         const popupWidth = Math.floor(monitor.width * 0.4);
         const popupHeight = Math.floor(monitor.height * 0.4);
 
         this._main_screen = new St.BoxLayout({
             vertical: false,
-            style: 'background-color: #212121; border-radius: 40px;',
+            style: `background-color: ${themeColors.background}; border-radius: 40px; border: 2px solid ${themeColors.accent};`,
             reactive: true,
             can_focus: true,
             track_hover: true,
@@ -533,8 +595,8 @@ export default class mainShow extends Extension {
 
         // ========== CREATE COLUMN ========== //
         const frontColumn = this._createColumn_width(Math.floor(popupWidth * 0.05));
-        const leftColumn = this._createColumn_width(Math.floor(popupWidth * 0.45));
-        const rightColumn = this._createColumn_width(Math.floor(popupWidth * 0.45));
+        const leftColumn = this._createColumn_width(Math.floor(popupWidth * 0.48));
+        const rightColumn = this._createColumn_width(Math.floor(popupWidth * 0.42));
         const backColumn = this._createColumn_width(Math.floor(popupWidth * 0.05));
 
         // ========== CREATE LEFT ========== //
@@ -588,23 +650,23 @@ export default class mainShow extends Extension {
                 background-size: cover;
                 background-position: center;
                 border-radius: 360px;
-                border: 3px solid white;
+                border: 3px solid ${themeColors.accent};
             `,
             clip_to_allocation: true,
         });
 
         profileRow.add_child(profileBin);
 
-        const Left_label_1 = new St.BoxLayout({
+        const deviceInfoUser = new St.BoxLayout({
             vertical: true,
             x_expand: true,
             y_align: Clutter.ActorAlign.END,
-            style: 'padding-left: 20px;',
+            style: 'padding-left: 15px;',
         });
 
         const deviceLabel = new St.Label({
             text: `Device name`,
-            style: 'color: white; font-weight: bold; font-size: 14px;',
+            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 14px;`,
         });
 
         const deviceNameRow = new St.BoxLayout({
@@ -613,17 +675,17 @@ export default class mainShow extends Extension {
         });
 
         this._deviceWithUptime = new St.Label({
-            text: 'Loading ...',
-            style: 'color: white; font-weight: bold; font-size: 18px;',
+            text: this._getUptime(),
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
             x_align: Clutter.ActorAlign.START,
         });
 
         deviceNameRow.add_child(this._deviceWithUptime);
 
-        Left_label_1.add_child(deviceLabel);
-        Left_label_1.add_child(deviceNameRow);
+        deviceInfoUser.add_child(deviceLabel);
+        deviceInfoUser.add_child(deviceNameRow);
 
-        profileRow.add_child(Left_label_1);
+        profileRow.add_child(deviceInfoUser);
 
         top1_LeftColumn.add_child(profileRow);
 
@@ -632,11 +694,11 @@ export default class mainShow extends Extension {
 
         ipRow.add_child(new St.Label({
             text: 'IP Address : ',
-            style: 'color:rgb(180, 180, 180); font-weight:bold; font-size:13px;'
+            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         }));
         ipRow.add_child(new St.Label({
             text: this._getLanIPAddress(),
-            style: 'color:white; font-weight:bold; font-size:14px;'
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
         }));
 
         top2_LeftColumn.add_child(ipRow);
@@ -646,11 +708,11 @@ export default class mainShow extends Extension {
 
         const wifiLabel = new St.Label({
             text: 'WiFi ssid : ',
-            style: 'color:rgb(180, 180, 180); font-weight:bold; font-size:13px;'
+            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         this._wifiSpeedLabel = new St.Label({
             text: `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`,
-            style: 'color:white; font-weight:bold; font-size:14px;'
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
         });
         const wifiRow = new St.BoxLayout({ vertical: false });
 
@@ -671,13 +733,13 @@ export default class mainShow extends Extension {
 
         const device_OS = new St.Label({
             text: `OS : ${osName} [${osType}]`,
-            style: 'color: white; font-weight: bold; font-size: 18px;',
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 18px;`,
             x_align: Clutter.ActorAlign.START,
         });
 
         const device_Kernel = new St.Label({
             text: `Kernel : Linux ${kernelVersion}`,
-            style: 'color: white; font-weight: bold; font-size: 16px;',
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
             x_align: Clutter.ActorAlign.START,
         });
         
@@ -689,11 +751,11 @@ export default class mainShow extends Extension {
 
         const cpuHead = new St.Label({
             text: 'Processor',
-            style: 'color:rgb(180, 180, 180); font-weight:bold; font-size:13px;'
+            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         const cpuName = new St.Label({
             text: `${cpu} x${core}`,
-            style: 'color: white; font-weight:bold; font-size:14px;'
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
         });
 
         this._coreBox = new St.BoxLayout({
@@ -714,7 +776,7 @@ export default class mainShow extends Extension {
         coreSpeeds.forEach((line) => {
             const label = new St.Label({
                 text: line,
-                style: 'font:monospace; color: white; font-weight:bold; font-size:11px;',
+                style: 'font-weight:bold; font-size:11px;',
                 x_expand: true
             });
             this._coreBox.add_child(label);
@@ -727,12 +789,12 @@ export default class mainShow extends Extension {
         // ========== DEVICE GPU ========== //
         const gpuHead = new St.Label({
             text: 'Graphics',
-            style: 'color:rgb(180, 180, 180); font-weight:bold; font-size:13px;'
+            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         
         this._gpuData = new St.Label({
             text: this._getGpuInfo(),
-            style: 'color: white; font-weight:bold; font-size:11px;'
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`
         });
 
         top3_RightColumn.add_child(gpuHead);
@@ -781,6 +843,19 @@ export default class mainShow extends Extension {
 
     disable() {
         this._destroyMainScreen();
+        
+        if (this._themeSettings) {
+            if (this._themeChangeSignal) {
+                this._themeSettings.disconnect(this._themeChangeSignal);
+                this._themeChangeSignal = null;
+            }
+            if (this._colorSchemeChangeSignal) {
+                this._themeSettings.disconnect(this._colorSchemeChangeSignal);
+                this._colorSchemeChangeSignal = null;
+            }
+            this._themeSettings = null;
+        }
+        
         if (this._indicator) {
             this._indicator.destroy();
             this._indicator = null;
