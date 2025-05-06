@@ -465,9 +465,7 @@ export default class mainShow extends Extension {
         return gpuInfo;
     }
 
-    _getGpuInfo() {
-        const ByteArray = imports.byteArray;
-    
+    _getGpuInfo() {   
         try {
             let resultList = [];
     
@@ -574,9 +572,51 @@ export default class mainShow extends Extension {
     }           
 
     _updateGpuData() {
-        this._gpuData.text = this._getCachedGpuInfo();
+        const gpuInfo = this._getCachedGpuInfo();
+        if (gpuInfo) {
+            this._gpuBox.destroy_all_children();
+    
+            const lines = gpuInfo.split('\n');
+            let currentBlock = [];
+    
+            lines.forEach((line) => {
+                if (line.trim() === '') return;
+                if (line.startsWith('GPU')) {
+                    if (currentBlock.length > 0) {
+                        currentBlock.forEach((blockLine) => {
+                            const label = new St.Label({
+                                text: blockLine,
+                                style: `font-weight: bold; font-size: 11px;`,
+                                x_expand: true
+                            });
+                            this._gpuBox.add_child(label);
+                        });
+ 
+                        this._gpuBox.add_child(new St.Label({
+                            text: ' ',
+                            style: 'font-size: 8px;',
+                            x_expand: true
+                        }));
+                    }
+                    currentBlock = [line];
+                } else {
+                    currentBlock.push(line);
+                }
+            });
+
+            if (currentBlock.length > 0) {
+                currentBlock.forEach((blockLine) => {
+                    const label = new St.Label({
+                        text: blockLine,
+                        style: `font-weight: bold; font-size: 11px;`,
+                        x_expand: true
+                    });
+                    this._gpuBox.add_child(label);
+                });
+            }
+        }
         return true;
-    }
+    }    
     
     // ========== MAIN SCREEN UI ========== //
     _showMainScreen() {
@@ -610,9 +650,9 @@ export default class mainShow extends Extension {
         const topRightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
         const top1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
         const space1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
-        const top2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.4));
-        const space2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.025));
-        const top3_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.2));
+        const top2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.35));
+        const space2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.045));
+        const top3_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.22));
 
         this._enableDrag(this._main_screen);
 
@@ -754,7 +794,7 @@ export default class mainShow extends Extension {
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         const cpuName = new St.Label({
-            text: `${cpu} x${core}`,
+            text: `${cpu} x ${core}`,
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
         });
 
@@ -764,14 +804,14 @@ export default class mainShow extends Extension {
             y_expand: true
         });
 
-        const scrollView = new St.ScrollView({
+        const cpu_scrollView = new St.ScrollView({
             style_class: 'custom-scroll',
             overlay_scrollbars: true,
             enable_mouse_scrolling: true,
             x_expand: true,
             y_expand: true
         });
-        scrollView.set_child(this._coreBox);
+        cpu_scrollView.set_child(this._coreBox);
         
         coreSpeeds.forEach((line) => {
             const label = new St.Label({
@@ -784,7 +824,7 @@ export default class mainShow extends Extension {
 
         top2_RightColumn.add_child(cpuHead);
         top2_RightColumn.add_child(cpuName);
-        top2_RightColumn.add_child(scrollView);
+        top2_RightColumn.add_child(cpu_scrollView);
 
         // ========== DEVICE GPU ========== //
         const gpuHead = new St.Label({
@@ -792,13 +832,58 @@ export default class mainShow extends Extension {
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         
-        this._gpuData = new St.Label({
-            text: this._getGpuInfo(),
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`
+        this._gpuBox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            y_expand: true
+        });
+        
+        const gpu_scrollView = new St.ScrollView({
+            style_class: 'custom-scroll',
+            overlay_scrollbars: true,
+            enable_mouse_scrolling: true,
+            x_expand: true,
+            y_expand: true
+        });
+        gpu_scrollView.set_child(this._gpuBox);
+        
+        const gpuLines = this._getCachedGpuInfo().split('\n');
+        
+        let currentBlock = [];
+        gpuLines.forEach((line) => {
+            if (line.startsWith('GPU')) {
+                if (currentBlock.length > 0) {
+                    currentBlock.forEach(blockLine => {
+                        const label = new St.Label({
+                            text: blockLine,
+                            style: 'font-weight: bold; font-size: 11px;',
+                            x_expand: true
+                        });
+                        this._gpuBox.add_child(label);
+                    });
+
+                    this._gpuBox.add_child(new St.Label({ text: ' ', style: 'font-size: 8px;' }));
+                }
+
+                currentBlock = [line];
+            } else if (line.trim() !== '') {
+                currentBlock.push(line);
+            }
         });
 
+        if (currentBlock.length > 0) {
+            currentBlock.forEach(blockLine => {
+                const label = new St.Label({
+                    text: blockLine,
+                    style: 'font-weight: bold; font-size: 11px;',
+                    x_expand: true
+                });
+                this._gpuBox.add_child(label);
+            });
+        }
+        
         top3_RightColumn.add_child(gpuHead);
-        top3_RightColumn.add_child(this._gpuData);
+        top3_RightColumn.add_child(gpu_scrollView);           
 
         // ========== END UI ========== //
         this._main_screen.set_size(popupWidth, popupHeight);
