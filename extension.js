@@ -12,7 +12,7 @@ export default class mainShow extends Extension {
         this._cache = {
             gpuInfo: { data: null, timestamp: 0 },
             cpuInfo: { data: null, timestamp: 0 },
-            systemInfo: { data: null, timestamp: 0 },
+            memoryInfo: { data: null, timestamp: 0 },
             networkInterface: { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 },
             themeColors: { background: null, text: null, secondaryText: null, accent: null }
         };
@@ -20,7 +20,7 @@ export default class mainShow extends Extension {
         this._cacheTTL = {
             gpuInfo: 5000,
             cpuInfo: 2000,
-            systemInfo: 60000,
+            memoryInfo: 5000,
             wifiSSID: 10000,
             themeColors: 5000
         };
@@ -41,7 +41,7 @@ export default class mainShow extends Extension {
         this._indicator.add_style_class_name('panel-button');
 
         this._label = new St.Label({
-            text: 'Info',
+            text: `Info`,
             y_align: Clutter.ActorAlign.CENTER,
         });
 
@@ -102,7 +102,7 @@ export default class mainShow extends Extension {
         }
     }
 
-    // ========== UI COMPONENT HELPERS ========== //
+    // ========== UI COMPONENT HELPERS ========== // ================================================================================================================================//
     _createColumn_width(width, backgroundColor = null) {
         const themeColors = this._updateThemeColors();
         const bgColor = backgroundColor || 'transparent';
@@ -165,7 +165,9 @@ export default class mainShow extends Extension {
         });
     }
 
-    // ========== DATA FETCHERS ========== //
+    // ========== DATA FETCHERS ========== // =======================================================================================================================================//
+
+    // ========== UP TIME ========== //
     _getUptime() {
         try {
             const [ok, contents] = GLib.file_get_contents('/proc/uptime');
@@ -192,21 +194,7 @@ export default class mainShow extends Extension {
         return true;
     }    
 
-    _getCachedSystemInfo() {
-        const now = Date.now();
-        if (this._cache.systemInfo.data && 
-            now - this._cache.systemInfo.timestamp < this._cacheTTL.systemInfo) {
-            return this._cache.systemInfo.data;
-        }
-
-        const systemInfo = this._getSystemInfo();
-        this._cache.systemInfo = {
-            data: systemInfo,
-            timestamp: now
-        };
-        return systemInfo;
-    }
-
+    // ========== SYSTEM ========== //
     _getSystemInfo() {
         let osName = 'Unknown OS';
         try {
@@ -243,6 +231,7 @@ export default class mainShow extends Extension {
         return { osName, osType, kernelVersion };
     }
     
+    // ========== LAN ========== //
     _getLanIPAddress() {
         try {
             const [ok, out] = GLib.spawn_command_line_sync("ip route get 1.1.1.1");
@@ -259,6 +248,7 @@ export default class mainShow extends Extension {
         return 'Unknown IP';
     }    
 
+    // ========== SSID ========== //
     _getWifiSSID() {
         try {
             const [ok, out] = GLib.spawn_command_line_sync("iwgetid -r");
@@ -271,6 +261,7 @@ export default class mainShow extends Extension {
         return 'Unknown Wi-Fi';
     }    
 
+    // ========== NET SPEED ========== //
     _getNetworkSpeed() {
         try {
             const [ok, data] = GLib.file_get_contents('/proc/net/dev');
@@ -337,6 +328,7 @@ export default class mainShow extends Extension {
         return true;
     }
 
+    // ========== CPU ========== //
     _getCachedCPUInfo() {
         const now = Date.now();
         if (this._cache.cpuInfo.data && 
@@ -388,7 +380,7 @@ export default class mainShow extends Extension {
             while ((match = coreTempRegex.exec(sensorText)) !== null) {
                 let id = match[1];
                 let temp = parseFloat(match[2]);
-                coreTemps[id] = temp.toFixed(1);
+                coreTemps[id] = temp.toFixed(0);
             }
     
             let result = [];
@@ -450,6 +442,7 @@ export default class mainShow extends Extension {
         return true;
     }  
     
+    // ========== GPU ========== //
     _getCachedGpuInfo() {
         const now = Date.now();
         if (this._cache.gpuInfo.data && 
@@ -617,8 +610,70 @@ export default class mainShow extends Extension {
         }
         return true;
     }    
+
+    // ========== RAM ========== //
+    _getCachedMemoryInfo() {
+        const now = Date.now();
+        if (this._cache.memoryInfo.data && 
+            now - this._cache.memoryInfo.timestamp < this._cacheTTL.memoryInfo) {
+            return this._cache.memoryInfo.data;
+        }
+
+        const memoryInfo = this._getMemoryInfo();
+        this._cache.memoryInfo = {
+            data: memoryInfo,
+            timestamp: now
+        };
+        return memoryInfo;
+    }
+
+    _getMemoryInfo() {
+        const meminfo = GLib.file_get_contents('/proc/meminfo')[1].toString();
     
-    // ========== MAIN SCREEN UI ========== //
+        const toKB = key => {
+            const match = meminfo.match(new RegExp(`^${key}:\\s+(\\d+)\\skB`, 'm'));
+            return match ? parseInt(match[1], 10) : 0;
+        };
+    
+        const total = toKB('MemTotal');
+        const free = toKB('MemFree');
+        const buffers = toKB('Buffers');
+        const cached = toKB('Cached');
+        const sreclaimable = toKB('SReclaimable');
+        const shmem = toKB('Shmem');
+    
+        const used = total - free - buffers - cached - sreclaimable + shmem;
+    
+        const totalGB = (total / 1024 / 1024).toFixed(1);
+        const usedGB = (used / 1024 / 1024).toFixed(1);
+        const cacheGB = ((cached + sreclaimable) / 1024 / 1024).toFixed(1);
+        const percentNum = ((used / total) * 100);
+        const percent = percentNum.toFixed(1);
+    
+        let loadEmoji = "⬜️";
+        if (percentNum >= 80) loadEmoji = "🟥";
+        else if (percentNum >= 60) loadEmoji = "🟧";
+        else if (percentNum >= 50) loadEmoji = "🟨";
+        else if (percentNum >= 40) loadEmoji = "🟩";
+    
+        return {
+            max: `${totalGB} GB`,
+            use: `${usedGB}`,
+            percent: `${percent}%`,
+            cache: `${cacheGB} GB`,
+            loadEmoji: loadEmoji
+        };
+    }      
+
+    _updateMemoryInfo() {
+        const memoryInfo = this._getCachedMemoryInfo();
+        const { use, max, percent, cache, loadEmoji } = memoryInfo;
+        this._memoryUse.text = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
+        this._memoryCache.text = `Cache ${cache}`;
+        return true;
+    } 
+    
+    // ========== MAIN SCREEN UI ========== // ======================================================================================================================================//
     _showMainScreen() {
         const themeColors = this._updateThemeColors();
         const monitor = Main.layoutManager.primaryMonitor;
@@ -633,40 +688,46 @@ export default class mainShow extends Extension {
             track_hover: true,
         });
 
-        // ========== CREATE COLUMN ========== //
+        // ========== CREATE COLUMN ========== // 
         const frontColumn = this._createColumn_width(Math.floor(popupWidth * 0.05));
         const leftColumn = this._createColumn_width(Math.floor(popupWidth * 0.48));
         const rightColumn = this._createColumn_width(Math.floor(popupWidth * 0.42));
         const backColumn = this._createColumn_width(Math.floor(popupWidth * 0.05));
 
         // ========== CREATE LEFT ========== //
-        const topLeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.06));
-        const top1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.18));
+        const space0_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.06));
+        const deviceInfoUser_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.18));
         const space1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
-        const top2_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
+        const ipAndWiFi_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
         const space2_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.025));
+        const Memory_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 2));
 
         // ========== CREATE RIGHT ========== //
-        const topRightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
-        const top1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
+        const space0_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.14));
+        const OS_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.10));
         const space1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
-        const top2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.35));
+        const Processor_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.35));
         const space2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.045));
-        const top3_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.22));
+        const Graphics_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.22));
 
-        this._enableDrag(this._main_screen);
+        // ========== CREATE END ========== //
+        const topEndColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
+
+        this._enableDrag(leftColumn);
+        this._enableDrag(rightColumn);
 
         this._main_screen.add_child(frontColumn);
         this._main_screen.add_child(leftColumn);
         this._main_screen.add_child(rightColumn);
         this._main_screen.add_child(backColumn);
 
-        // ========== LEFT COLUMN ========== //
-        leftColumn.add_child(topLeftColumn);
-        leftColumn.add_child(top1_LeftColumn);
+        // ========== LEFT COLUMN ========== // =====================================================================================================================================//
+        leftColumn.add_child(space0_LeftColumn);
+        leftColumn.add_child(deviceInfoUser_LeftColumn);
         leftColumn.add_child(space1_LeftColumn);
-        leftColumn.add_child(top2_LeftColumn);
+        leftColumn.add_child(ipAndWiFi_LeftColumn);
         leftColumn.add_child(space2_LeftColumn);
+        leftColumn.add_child(Memory_LeftColumn);
 
         // ========== DEVICE PROFILE ========== //
         const userName = GLib.get_user_name();
@@ -727,7 +788,7 @@ export default class mainShow extends Extension {
 
         profileRow.add_child(deviceInfoUser);
 
-        top1_LeftColumn.add_child(profileRow);
+        deviceInfoUser_LeftColumn.add_child(profileRow);
 
         // ========== DEVICE IP ========== //
         const ipRow = new St.BoxLayout({ vertical: false });
@@ -741,7 +802,7 @@ export default class mainShow extends Extension {
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
         }));
 
-        top2_LeftColumn.add_child(ipRow);
+        ipAndWiFi_LeftColumn.add_child(ipRow);
 
         // ========== DEVICE WIFI ========== //
         const { download, upload } = this._getNetworkSpeed();
@@ -758,15 +819,36 @@ export default class mainShow extends Extension {
 
         wifiRow.add_child(wifiLabel);
         wifiRow.add_child(this._wifiSpeedLabel);
-        top2_LeftColumn.add_child(wifiRow);
+        ipAndWiFi_LeftColumn.add_child(wifiRow);
 
-        // ========== RIGHT COLUMN ========== //
-        rightColumn.add_child(topRightColumn);
-        rightColumn.add_child(top1_RightColumn);
+         // ========== DEVICE MEMORY ========== //
+        const { max, use, percent, cache, loadEmoji} = this._getMemoryInfo();
+        const memoryHead = new St.Label({
+            text: 'Memory',
+            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+        });
+
+        this._memoryUse = new St.Label({
+            text: `${loadEmoji} [ ${use} / ${max} ] [${percent}]`,
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 13px;`
+        });
+
+        this._memoryCache = new St.Label({
+            text: `Cache ${cache}`,
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+        });
+
+        Memory_LeftColumn.add_child(memoryHead);
+        Memory_LeftColumn.add_child(this._memoryUse);
+        Memory_LeftColumn.add_child(this._memoryCache);
+
+        // ========== RIGHT COLUMN ========== // ====================================================================================================================================//
+        rightColumn.add_child(space0_RightColumn);
+        rightColumn.add_child(OS_RightColumn);
         rightColumn.add_child(space1_RightColumn);
-        rightColumn.add_child(top2_RightColumn);
+        rightColumn.add_child(Processor_RightColumn);
         rightColumn.add_child(space2_RightColumn);
-        rightColumn.add_child(top3_RightColumn);
+        rightColumn.add_child(Graphics_RightColumn);
         
         // ========== SYSTEM INFO ========== //
         const { osName, osType, kernelVersion } = this._getSystemInfo();
@@ -783,8 +865,8 @@ export default class mainShow extends Extension {
             x_align: Clutter.ActorAlign.START,
         });
         
-        top1_RightColumn.add_child(device_OS);
-        top1_RightColumn.add_child(device_Kernel);
+        OS_RightColumn.add_child(device_OS);
+        OS_RightColumn.add_child(device_Kernel);
 
         // ========== DEVICE CPU ========== //
         const {cpu, core, coreSpeeds} = this._getCPUInfo();
@@ -822,9 +904,9 @@ export default class mainShow extends Extension {
             this._coreBox.add_child(label);
         });
 
-        top2_RightColumn.add_child(cpuHead);
-        top2_RightColumn.add_child(cpuName);
-        top2_RightColumn.add_child(cpu_scrollView);
+        Processor_RightColumn.add_child(cpuHead);
+        Processor_RightColumn.add_child(cpuName);
+        Processor_RightColumn.add_child(cpu_scrollView);
 
         // ========== DEVICE GPU ========== //
         const gpuHead = new St.Label({
@@ -882,10 +964,32 @@ export default class mainShow extends Extension {
             });
         }
         
-        top3_RightColumn.add_child(gpuHead);
-        top3_RightColumn.add_child(gpu_scrollView);           
+        Graphics_RightColumn.add_child(gpuHead);
+        Graphics_RightColumn.add_child(gpu_scrollView);           
 
-        // ========== END UI ========== //
+        // ========== BACK COLUMN ========== // =====================================================================================================================================//
+        backColumn.add_child(topEndColumn);
+
+        // ========== EXIT ========== //
+        const closeButton = new St.Button({
+            style: `background-color: #f44336; 
+                    color: white; 
+                    width: 35px; 
+                    height: 35px; 
+                    border-radius: 5px; 
+                    border: 2px solid ${themeColors.accent};
+                    font-weight: bold;`,
+            label: 'X',
+        });
+
+        closeButton.connect('clicked', () => {
+            this._indicator.remove_style_class_name('active');
+            this._destroyMainScreen();
+        });
+
+        topEndColumn.add_child(closeButton);
+
+        // ========== END UI ========== // ==========================================================================================================================================//
         this._main_screen.set_size(popupWidth, popupHeight);
 
         Main.layoutManager.addChrome(this._main_screen, {
@@ -909,6 +1013,7 @@ export default class mainShow extends Extension {
             this._updateWifiSpeed();
             this._updateCPUInfo();
             this._updateGpuData();
+            this._updateMemoryInfo();
             return true;
         });
     }
