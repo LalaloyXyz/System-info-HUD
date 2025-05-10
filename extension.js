@@ -14,15 +14,18 @@ export default class mainShow extends Extension {
             cpuInfo: { data: null, timestamp: 0 },
             memoryInfo: { data: null, timestamp: 0 },
             networkInterface: { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 },
-            themeColors: { background: null, text: null, secondaryText: null, accent: null }
+            systemInfo: { data: null, timestamp: 0 },
+            lanIP: { data: null, timestamp: 0 },
+            wifiSSID: { data: null, timestamp: 0 }
         };
 
         this._cacheTTL = {
-            gpuInfo: 5000,
-            cpuInfo: 2000,
-            memoryInfo: 5000,
-            wifiSSID: 10000,
-            themeColors: 5000
+            gpuInfo: 5000,       // 5 s
+            cpuInfo: 2000,       // 2 s
+            memoryInfo: 3000,    // 3 s
+            systemInfo: 600000,  // 10 m
+            lanIP: 60000,        // 1 m
+            wifiSSID: 10000      // 10 s
         };
 
         this._updateFrequency = 1;
@@ -66,12 +69,6 @@ export default class mainShow extends Extension {
     }
 
     _updateThemeColors() {
-        const currentTime = Date.now();
-        if (this._cache.themeColors.timestamp && 
-            currentTime - this._cache.themeColors.timestamp < this._cacheTTL.themeColors) {
-            return this._cache.themeColors;
-        }
-        
         const colorScheme = this._themeSettings.get_string('color-scheme');
         const isDarkTheme = colorScheme === 'prefer-dark';
 
@@ -85,15 +82,13 @@ export default class mainShow extends Extension {
             text: textColor,
             secondaryText: secondaryTextColor,
             accent: accentColor,
-            isDark: isDarkTheme,
-            timestamp: currentTime
+            isDark: isDarkTheme
         };
-        
+
         return this._cache.themeColors;
     }
     
     _onThemeChanged() {
-        this._cache.themeColors.timestamp = 0;
         this._updateThemeColors();
 
         if (this._main_screen) {
@@ -196,6 +191,12 @@ export default class mainShow extends Extension {
 
     // ========== SYSTEM ========== //
     _getSystemInfo() {
+        const now = Date.now();
+        if (this._cache.systemInfo.data && 
+            now - this._cache.systemInfo.timestamp < this._cacheTTL.systemInfo) {
+            return this._cache.systemInfo.data;
+        }
+
         let osName = 'Unknown OS';
         try {
             const [ok, osReleaseContent] = GLib.file_get_contents('/etc/os-release');
@@ -228,37 +229,70 @@ export default class mainShow extends Extension {
             log('Failed to get kernel version: ' + e.message);
         }
     
-        return { osName, osType, kernelVersion };
+        const result = { osName, osType, kernelVersion };
+        
+        this._cache.systemInfo = {
+            data: result,
+            timestamp: now
+        };
+        
+        return result;
     }
     
     // ========== LAN ========== //
     _getLanIPAddress() {
+        const now = Date.now();
+        if (this._cache.lanIP.data && 
+            now - this._cache.lanIP.timestamp < this._cacheTTL.lanIP) {
+            return this._cache.lanIP.data;
+        }
+
         try {
             const [ok, out] = GLib.spawn_command_line_sync("ip route get 1.1.1.1");
             if (ok) {
                 const output = imports.byteArray.toString(out);
                 const match = output.match(/src (\d+\.\d+\.\d+\.\d+)/);
                 if (match) {
-                    return match[1];
+                    const ip = match[1];
+                    
+                    this._cache.lanIP = {
+                        data: ip,
+                        timestamp: now
+                    };
+                    
+                    return ip;
                 }
             }
         } catch (e) {
             log('Failed to get LAN IP: ' + e.message);
         }
-        return 'Unknown IP';
+        return 'Unknown';
     }    
 
     // ========== SSID ========== //
     _getWifiSSID() {
+        const now = Date.now();
+        if (this._cache.wifiSSID.data && 
+            now - this._cache.wifiSSID.timestamp < this._cacheTTL.wifiSSID) {
+            return this._cache.wifiSSID.data;
+        }
+
         try {
             const [ok, out] = GLib.spawn_command_line_sync("iwgetid -r");
             if (ok) {
-                return imports.byteArray.toString(out).trim() || "Not connected";
+                const ssid = imports.byteArray.toString(out).trim() || "Not connected";
+                
+                this._cache.wifiSSID = {
+                    data: ssid,
+                    timestamp: now
+                };
+                
+                return ssid;
             }
         } catch (e) {
             log('Failed to get SSID: ' + e.message);
         }
-        return 'Unknown Wi-Fi';
+        return 'Unknown';
     }    
 
     // ========== NET SPEED ========== //
@@ -296,8 +330,10 @@ export default class mainShow extends Extension {
     
             if (this._cache.networkInterface.lastTimestamp && activeIface === this._cache.networkInterface.lastIface) {
                 const dt = (now - this._cache.networkInterface.lastTimestamp) / 1000;
-                down = this._formatSpeed((rx - this._cache.networkInterface.lastRx) / dt);
-                up = this._formatSpeed((tx - this._cache.networkInterface.lastTx) / dt);
+                if (dt > 0) {
+                    down = this._formatSpeed((rx - this._cache.networkInterface.lastRx) / dt);
+                    up = this._formatSpeed((tx - this._cache.networkInterface.lastTx) / dt);
+                }
             }
     
             this._cache.networkInterface = {
@@ -323,8 +359,15 @@ export default class mainShow extends Extension {
     }    
 
     _updateWifiSpeed() {
+        if (!this._wifiSpeedLabel) return true;
+    
         const { download, upload } = this._getNetworkSpeed();
-        this._wifiSpeedLabel.text = `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`;
+        const ssid = this._getWifiSSID();
+        const newText = `${ssid} ↓ ${download} ↑ ${upload}`;
+
+        if (this._wifiSpeedLabel.text !== newText) {
+            this._wifiSpeedLabel.text = newText;
+        }   
         return true;
     }
 
@@ -427,17 +470,36 @@ export default class mainShow extends Extension {
     }    
 
     _updateCPUInfo() {
-        let cpuInfo = this._getCachedCPUInfo();
-        if (cpuInfo) {
-            this._coreBox.destroy_all_children();
-            cpuInfo.coreSpeeds.forEach((line) => {
+        if (!this._coreBox) return true;
+    
+        const cpuInfo = this._getCachedCPUInfo();
+        if (!cpuInfo || !cpuInfo.coreSpeeds) return true;
+
+        const children = this._coreBox.get_children();
+        const existingCount = children.length;
+        const newCount = cpuInfo.coreSpeeds.length;
+        
+        for (let i = 0; i < Math.min(existingCount, newCount); i++) {
+            if (children[i].text !== cpuInfo.coreSpeeds[i]) {
+                children[i].text = cpuInfo.coreSpeeds[i];
+            }
+        }
+        
+        if (existingCount < newCount) {
+            const fragment = new St.BoxLayout({ vertical: true });
+            for (let i = existingCount; i < newCount; i++) {
                 const label = new St.Label({
-                    text: line,
+                    text: cpuInfo.coreSpeeds[i],
                     style: `font-weight: bold; font-size: 11px;`,
                     x_expand: true
                 });
-                this._coreBox.add_child(label);
-            });
+                fragment.add_child(label);
+            }
+            this._coreBox.add_child(fragment);
+        } else if (existingCount > newCount) {
+            for (let i = newCount; i < existingCount; i++) {
+                children[i].hide();
+            }
         }
         return true;
     }  
@@ -565,51 +627,66 @@ export default class mainShow extends Extension {
     }           
 
     _updateGpuData() {
+        if (!this._gpuBox) return true;
+    
         const gpuInfo = this._getCachedGpuInfo();
-        if (gpuInfo) {
-            this._gpuBox.destroy_all_children();
-    
-            const lines = gpuInfo.split('\n');
-            let currentBlock = [];
-    
-            lines.forEach((line) => {
-                if (line.trim() === '') return;
-                if (line.startsWith('GPU')) {
-                    if (currentBlock.length > 0) {
-                        currentBlock.forEach((blockLine) => {
-                            const label = new St.Label({
-                                text: blockLine,
-                                style: `font-weight: bold; font-size: 11px;`,
-                                x_expand: true
-                            });
-                            this._gpuBox.add_child(label);
-                        });
- 
-                        this._gpuBox.add_child(new St.Label({
-                            text: ' ',
-                            style: 'font-size: 8px;',
-                            x_expand: true
-                        }));
-                    }
-                    currentBlock = [line];
-                } else {
-                    currentBlock.push(line);
-                }
-            });
+        if (!gpuInfo) return true;
 
-            if (currentBlock.length > 0) {
-                currentBlock.forEach((blockLine) => {
-                    const label = new St.Label({
-                        text: blockLine,
-                        style: `font-weight: bold; font-size: 11px;`,
-                        x_expand: true
-                    });
-                    this._gpuBox.add_child(label);
+        const lines = gpuInfo.split('\n').filter(line => line.trim() !== '');
+        let blocks = [];
+        let currentBlock = [];
+        
+        lines.forEach((line) => {
+            if (line.startsWith('GPU')) {
+                if (currentBlock.length > 0) {
+                    blocks.push(currentBlock);
+                    currentBlock = [];
+                }
+                currentBlock = [line];
+            } else {
+                currentBlock.push(line);
+            }
+        });
+        
+        if (currentBlock.length > 0) {
+            blocks.push(currentBlock);
+        }
+
+        let allLines = [];
+        blocks.forEach((block, index) => {
+            allLines = [...allLines, ...block];
+            if (index < blocks.length - 1) {
+                allLines.push(' ');
+            }
+        });
+
+        const children = this._gpuBox.get_children();
+        const existingCount = children.length;
+        const newCount = allLines.length;
+
+        for (let i = 0; i < Math.min(existingCount, newCount); i++) {
+            if (children[i].text !== allLines[i]) {
+                children[i].text = allLines[i];
+            }
+        }
+
+        if (existingCount < newCount) {
+            for (let i = existingCount; i < newCount; i++) {
+                const label = new St.Label({
+                    text: allLines[i],
+                    style: `font-weight: bold; font-size: 11px;`,
+                    x_expand: true
                 });
+                this._gpuBox.add_child(label);
+            }
+        } 
+        else if (existingCount > newCount) {
+            for (let i = newCount; i < existingCount; i++) {
+                children[i].hide();
             }
         }
         return true;
-    }    
+    }
 
     // ========== RAM ========== //
     _getCachedMemoryInfo() {
@@ -666,10 +743,21 @@ export default class mainShow extends Extension {
     }      
 
     _updateMemoryInfo() {
+        if (!this._memoryUse || !this._memoryCache) return true;
+    
         const memoryInfo = this._getCachedMemoryInfo();
         const { use, max, percent, cache, loadEmoji } = memoryInfo;
-        this._memoryUse.text = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
-        this._memoryCache.text = `Cache ${cache}`;
+        
+        const newUseText = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
+        const newCacheText = `Cache ${cache}`;
+
+        if (this._memoryUse.text !== newUseText) {
+            this._memoryUse.text = newUseText;
+        }
+        
+        if (this._memoryCache.text !== newCacheText) {
+            this._memoryCache.text = newCacheText;
+        }
         return true;
     } 
     
@@ -682,7 +770,11 @@ export default class mainShow extends Extension {
 
         this._main_screen = new St.BoxLayout({
             vertical: false,
-            style: `background-color: ${themeColors.background}; border-radius: 40px; border: 2px solid ${themeColors.accent};`,
+            style: `
+            background-color: ${themeColors.background};
+            border: 2px solid ${themeColors.accent};
+            border-radius: 20px 5px 20px 20px;
+            `,
             reactive: true,
             can_focus: true,
             track_hover: true,
