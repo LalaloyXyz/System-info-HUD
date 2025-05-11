@@ -6,6 +6,7 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
+
 const ByteArray = imports.byteArray;
 
 const getStatusEmoji = (value, thresholds) => {
@@ -28,7 +29,9 @@ export default class mainShow extends Extension {
             networkInterface: { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 },
             systemInfo: { data: null, timestamp: 0 },
             lanIP: { data: null, timestamp: 0 },
-            wifiSSID: { data: null, timestamp: 0 }
+            publicIP: { data: null, timestamp: 0 },
+            wifiSSID: { data: null, timestamp: 0 },
+            powerInfo: { data: null, timestamp: 0 }
         };
 
         this._cacheTTL = {
@@ -38,7 +41,9 @@ export default class mainShow extends Extension {
             storageInfo: 60000,  // 1 m
             systemInfo: 600000,  // 10 m
             lanIP: 60000,        // 1 m
-            wifiSSID: 10000      // 10 s
+            publicIP: 120000,    // 2 m
+            wifiSSID: 10000,     // 10 s
+            powerInfo: 5000,     // 5 s
         };
 
         this._updateFrequency = 1;
@@ -252,35 +257,81 @@ export default class mainShow extends Extension {
         return result;
     }
     
-    // ========== LAN ========== //
-    _getLanIPAddress() {
+    // ========== IP ========== //
+     _getLocalIP() {
         const now = Date.now();
         if (this._cache.lanIP.data && 
             now - this._cache.lanIP.timestamp < this._cacheTTL.lanIP) {
             return this._cache.lanIP.data;
         }
 
+        let local_ip = 'Unknown';
         try {
             const [ok, out] = GLib.spawn_command_line_sync("ip route get 1.1.1.1");
             if (ok) {
                 const output = imports.byteArray.toString(out);
                 const match = output.match(/src (\d+\.\d+\.\d+\.\d+)/);
                 if (match) {
-                    const ip = match[1];
-                    
+                    local_ip = match[1];
                     this._cache.lanIP = {
-                        data: ip,
+                        data: local_ip,
                         timestamp: now
                     };
-                    
-                    return ip;
                 }
             }
         } catch (e) {
             log('Failed to get LAN IP: ' + e.message);
         }
-        return 'Unknown';
-    }    
+        return local_ip;
+    }
+
+    _getPublicIP() {
+        const now = Date.now();
+        if (this._cache.publicIP.data && 
+            now - this._cache.publicIP.timestamp < this._cacheTTL.publicIP) {
+            return this._cache.publicIP.data;
+        }
+
+        try {
+            let [ok, stdout, stderr, status] = GLib.spawn_command_line_sync(
+                "curl -s https://api.ipify.org"
+            );
+
+            if (ok && stdout.length > 0) {
+                const ip = ByteArray.toString(stdout).trim();
+
+                this._cache.publicIP = {
+                    data: ip,
+                    timestamp: Date.now()
+                };
+
+                if (this._publicIPLabel)
+                    this._publicIPLabel.text = ip;
+
+                return ip;
+            }
+        } catch (e) {
+            log(`Error fetching public IP with curl: ${e.message}`);
+        }
+
+        return this._cache.publicIP.data || 'Error';
+    }
+
+    _updateIPInfo() {
+        if (!this._publicIPLabel || !this._localIPLabel) return true;
+        
+        const localIP = this._getLocalIP();
+        if (this._localIPLabel.text !== localIP) {
+            this._localIPLabel.text = localIP;
+        }
+        
+        const publicIP = this._getPublicIP();
+        if (this._publicIPLabel.text !== publicIP) {
+            this._publicIPLabel.text = publicIP;
+        }
+        
+        return true;
+    }
 
     // ========== SSID ========== //
     _getWifiSSID() {
@@ -825,7 +876,77 @@ export default class mainShow extends Extension {
         }
         return true;
     }
+
+    // ========== POWER ========== //
+    _getCachedPowerInfo() {
+        const now = Date.now();
+        if (this._cache.powerInfo.data && 
+            now - this._cache.powerInfo.timestamp < this._cacheTTL.powerInfo) {
+            return this._cache.powerInfo.data;
+        }
+
+        const powerInfo = this._getPowerInfo();
+        this._cache.powerInfo = {
+            data: powerInfo,
+            timestamp: now
+        };
+        return powerInfo;
+    }
+
+    _getPowerInfo() {
+        try {
+            let [success, stdout, stderr, exitCode] = GLib.spawn_command_line_sync(
+                'bash -c "upower -i $(upower -e | grep BAT) | grep -E \\"state|percentage|time|energy-rate\\""'
+            );
+            
+            if (!success || exitCode !== 0) {
+                return "Power data unavailable";
+            }
+            
+            let output = new TextDecoder().decode(stdout);
+            
+            let state = "Unknown";
+            let percentage = "";
+            let wattage = "";
+            let time = "";
+            
+            let stateMatch = output.match(/state:\s+(\w+)/i);
+            if (stateMatch && stateMatch[1]) {
+                state = stateMatch[1].charAt(0).toUpperCase() + stateMatch[1].slice(1);
+            }
+            
+            let percentMatch = output.match(/percentage:\s+(\d+(\.\d+)?)%/i);
+            if (percentMatch && percentMatch[1]) {
+                percentage = parseFloat(percentMatch[1]).toFixed(1);
+            }
+            
+            let rateMatch = output.match(/energy-rate:\s+(\d+(\.\d+)?)\s+W/i);
+            if (rateMatch && rateMatch[1]) {
+                wattage = parseFloat(rateMatch[1]).toFixed(2);
+            }
+
+            let timeMatch = output.match(/time to (empty|full):\s+(.+)/i);
+            if (timeMatch) {
+                time = timeMatch[2].trim();
+            }
+            
+            return `${percentage}% | ${wattage}W\n${state}${time ? " | " + time : ""}`;
+        } catch (e) {
+            logError(e);
+            return "Error reading power data";
+        }
+    }
+
+    _updatePowerInfo() {
+        if (!this._memoryUse || !this._memoryCache) return true;
     
+        const memoryInfo = this._getCachedPowerInfo();
+        if (this._powerShow.text !== memoryInfo) {
+            this._powerShow.text = memoryInfo;
+        }
+        return true;
+    } 
+        
     // ========== MAIN SCREEN UI ========== // ======================================================================================================================================//
     _showMainScreen() {
         const themeColors = this._updateThemeColors();
@@ -855,11 +976,13 @@ export default class mainShow extends Extension {
         const space0_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.06));
         const deviceInfoUser_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.18));
         const space1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
-        const ipAndWiFi_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
+        const ipAndWiFi_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
         const space2_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.025));
         const Memory_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
         const space3_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.025));
         const Storage_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.24));
+        const space4_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.005));
+        const Power_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
 
         // ========== CREATE RIGHT ========== //
         const space0_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.14));
@@ -867,7 +990,7 @@ export default class mainShow extends Extension {
         const space1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
         const Processor_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.35));
         const space2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.045));
-        const Graphics_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.24));
+        const Graphics_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.22));
 
         // ========== CREATE END ========== //
         const topEndColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
@@ -889,6 +1012,8 @@ export default class mainShow extends Extension {
         leftColumn.add_child(Memory_LeftColumn);
         leftColumn.add_child(space3_LeftColumn);
         leftColumn.add_child(Storage_LeftColumn);
+        leftColumn.add_child(space4_LeftColumn);
+        leftColumn.add_child(Power_LeftColumn);
 
         // ========== DEVICE PROFILE ========== //
         const userName = GLib.get_user_name();
@@ -951,36 +1076,50 @@ export default class mainShow extends Extension {
 
         deviceInfoUser_LeftColumn.add_child(profileRow);
 
-        // ========== DEVICE IP ========== //
-        const ipRow = new St.BoxLayout({ vertical: false });
-
-        ipRow.add_child(new St.Label({
-            text: 'IP Address : ',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
-        }));
-        ipRow.add_child(new St.Label({
-            text: this._getLanIPAddress(),
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
-        }));
-
-        ipAndWiFi_LeftColumn.add_child(ipRow);
-
         // ========== DEVICE WIFI ========== //
         const { download, upload } = this._getNetworkSpeed();
 
         const wifiLabel = new St.Label({
-            text: 'WiFi ssid : ',
+            text: 'Wi-Fi : ',
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         this._wifiSpeedLabel = new St.Label({
             text: `${this._getWifiSSID()} ↓ ${download} ↑ ${upload}`,
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 13px;`
         });
         const wifiRow = new St.BoxLayout({ vertical: false });
 
         wifiRow.add_child(wifiLabel);
         wifiRow.add_child(this._wifiSpeedLabel);
         ipAndWiFi_LeftColumn.add_child(wifiRow);
+
+        // ========== IP ========== //
+        const publicipRow = new St.BoxLayout({ vertical: false });
+        const localipRow = new St.BoxLayout({ vertical: false });
+
+        // Public IP Label
+        publicipRow.add_child(new St.Label({
+            text: 'Public IP : ',
+            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 12px;`
+        }));
+        const publicIPLabel = new St.Label({
+            text: this._getPublicIP(),
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+        });
+        publicipRow.add_child(publicIPLabel);
+
+        // Local IP Label
+        localipRow.add_child(new St.Label({
+            text: 'Local IP : ',
+            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 12px;`
+        }));
+        localipRow.add_child(new St.Label({
+            text: this._getLocalIP(),
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+        }));
+
+        ipAndWiFi_LeftColumn.add_child(publicipRow);
+        ipAndWiFi_LeftColumn.add_child(localipRow);
 
          // ========== DEVICE MEMORY ========== //
         const { max, use, percent, cache, loadEmoji} = this._getMemoryInfo();
@@ -1037,6 +1176,20 @@ export default class mainShow extends Extension {
 
         Storage_LeftColumn.add_child(storageHead);
         Storage_LeftColumn.add_child(storage_scrollView);
+
+        // ========== DEVICE POWER ========== //
+        const powerHead = new St.Label({
+            text: 'Power',
+            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+        });
+
+        this._powerShow = new St.Label({
+            text: this._getPowerInfo(),
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+        });
+
+        Power_LeftColumn.add_child(powerHead);
+        Power_LeftColumn.add_child(this._powerShow);
 
         // ========== RIGHT COLUMN ========== // ====================================================================================================================================//
         rightColumn.add_child(space0_RightColumn);
@@ -1205,11 +1358,13 @@ export default class mainShow extends Extension {
 
         this._updateTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this._updateFrequency, () => {
             this._updateUptime();
+            this._updateIPInfo();
             this._updateWifiSpeed();
             this._updateCPUInfo();
             this._updateGpuData();
             this._updateMemoryInfo();
             this._updateStorageInfo();
+            this._updatePowerInfo();
             return true;
         });
     }
