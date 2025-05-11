@@ -5,7 +5,18 @@ import Gio from 'gi://Gio';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+
 const ByteArray = imports.byteArray;
+
+const getStatusEmoji = (value, thresholds) => {
+    if (value >= thresholds[0]) return "🟥";
+    if (value >= thresholds[1]) return "🟧";
+    if (value >= thresholds[2]) return "🟨";
+    if (value >= thresholds[3]) return "🟩";
+    if (thresholds.length > 4 && value >= thresholds[4]) return "⬜️";
+    if (thresholds.length > 5) return "🟦";
+    return "⬜️";
+};
 
 export default class mainShow extends Extension {
     enable() {
@@ -13,6 +24,7 @@ export default class mainShow extends Extension {
             gpuInfo: { data: null, timestamp: 0 },
             cpuInfo: { data: null, timestamp: 0 },
             memoryInfo: { data: null, timestamp: 0 },
+            storageInfo: { data: null, timestamp: 0 },
             networkInterface: { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 },
             systemInfo: { data: null, timestamp: 0 },
             lanIP: { data: null, timestamp: 0 },
@@ -23,6 +35,7 @@ export default class mainShow extends Extension {
             gpuInfo: 5000,       // 5 s
             cpuInfo: 2000,       // 2 s
             memoryInfo: 3000,    // 3 s
+            storageInfo: 60000,  // 1 m
             systemInfo: 600000,  // 10 m
             lanIP: 60000,        // 1 m
             wifiSSID: 10000      // 10 s
@@ -391,17 +404,17 @@ export default class mainShow extends Extension {
         try {
             let [ok, out] = GLib.file_get_contents('/proc/cpuinfo');
             if (!ok) return;
-    
+            
             let text = out.toString();
             let modelMatch = text.match(/^model name\s+:\s+(.+)$/m);
             let modelName = modelMatch ? modelMatch[1].trim() : "Unknown";
-    
+            
             let coreSpeeds = {};
             let processorIds = [];
             let coreIdMap = {};
             let lines = text.split('\n');
             let currentProcessorId = null;
-    
+            
             for (let line of lines) {
                 if (line.startsWith('processor')) {
                     currentProcessorId = line.split(':')[1].trim();
@@ -414,7 +427,7 @@ export default class mainShow extends Extension {
                     coreSpeeds[currentProcessorId] = Math.floor(parseFloat(speed));
                 }
             }
-    
+            
             let [res, sensorOut, err, status] = GLib.spawn_command_line_sync("sensors");
             let sensorText = sensorOut.toString();
             let coreTemps = {};
@@ -425,49 +438,41 @@ export default class mainShow extends Extension {
                 let temp = parseFloat(match[2]);
                 coreTemps[id] = temp.toFixed(0);
             }
-    
+            
             let result = [];
             processorIds.sort((a, b) => parseInt(a) - parseInt(b)).forEach((pid) => {
                 let coreName = `Core-${String(pid).padStart(2, '0')}    [`;
                 let speed = coreSpeeds[pid] || "N/A";
                 let coreId = coreIdMap[pid] || "0";
                 let temp = coreTemps[coreId] || "N/A";
-    
-                let speedEmoji = "⬜";
-                if (speed >= 3000) speedEmoji = "🟥";
-                else if (speed >= 2250) speedEmoji = "🟧";
-                else if (speed >= 1500) speedEmoji = "🟨";
-                else if (speed >= 750) speedEmoji = "🟩";
-                else speedEmoji = "⬜️";
-    
+                
+                let speedEmoji = getStatusEmoji(speed, [3000, 2250, 1500, 750]);
+                
                 let tempEmoji = "⬜️";
                 if (temp !== "N/A") {
                     let tempNum = parseFloat(temp);
-                    if (tempNum >= 80) tempEmoji = "🟥";
-                    else if (tempNum >= 70) tempEmoji = "🟧";
-                    else if (tempNum >= 55) tempEmoji = "🟨";
-                    else if (tempNum >= 40) tempEmoji = "🟩";
-                    else if (tempNum >= 30) tempEmoji = "⬜️";
-                    else tempEmoji = "🟦";
+                    tempEmoji = getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
                 }
-    
+                
                 let speedStr = `${speed} MHz`.padEnd(10);
-                let tempStr = `]    ${tempEmoji} Temp   [ ${temp}°C ]`;
-    
-                if (speed < 1000) result.push(`${speedEmoji} ${coreName}       ${speedStr}   ${tempStr}`);
-                             else result.push(`${speedEmoji} ${coreName}     ${speedStr}    ${tempStr}`);
+                let tempStr = `]    ${tempEmoji} Temp   ${temp} °C`;
+                
+                if (speed < 1000) 
+                    result.push(`${speedEmoji} ${coreName}       ${speedStr}   ${tempStr}`);
+                else 
+                    result.push(`${speedEmoji} ${coreName}     ${speedStr}    ${tempStr}`);
             });
-    
+            
             return {
                 cpu: modelName,
                 core: processorIds.length,
                 coreSpeeds: result
             };
-    
+            
         } catch (e) {
             logError(e);
         }
-    }    
+    }
 
     _updateCPUInfo() {
         if (!this._coreBox) return true;
@@ -523,7 +528,7 @@ export default class mainShow extends Extension {
     _getGpuInfo() {   
         try {
             let resultList = [];
-    
+
             // Check for NVIDIA
             let [nvidiaOk, nvidiaOut] = GLib.spawn_command_line_sync("sh -c \"command -v nvidia-smi\"");
             if (nvidiaOk && nvidiaOut && ByteArray.toString(nvidiaOut).trim() !== "") {
@@ -532,31 +537,21 @@ export default class mainShow extends Extension {
                     let nvidiaData = ByteArray.toString(out).trim().split('\n');
                     nvidiaData.forEach(line => {
                         let [name, total, used, temp] = line.split(',').map(s => s.trim());
-    
+
                         let load = Math.round((parseInt(used) / parseInt(total)) * 100);
-    
-                        let loadEmoji = "⬜️";
-                        if (load >= 80) loadEmoji = "🟥";
-                        else if (load >= 60) loadEmoji = "🟧";
-                        else if (load >= 50) loadEmoji = "🟨";
-                        else if (load >= 40) loadEmoji = "🟩";
-                        else loadEmoji = "⬜️";
-    
+                        let loadEmoji = getStatusEmoji(load, [80, 60, 50, 40]);
+                        
                         let tempEmoji = "⬜️";
                         if (temp !== "N/A") {
                             let tempNum = parseFloat(temp);
-                            if (tempNum >= 80) tempEmoji = "🟥";
-                            else if (tempNum >= 70) tempEmoji = "🟧";
-                            else if (tempNum >= 55) tempEmoji = "🟨";
-                            else if (tempNum >= 40) tempEmoji = "🟩";
-                            else tempEmoji = "⬜️";
+                            tempEmoji = getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
                         }
-    
-                        resultList.push(`GPU${resultList.length} - [ ${name} ]\n${loadEmoji} [ VRAM : ${used}MB / ${total}MB ] [${load}%] ${tempEmoji} Temp [${temp}°C]`);
+
+                        resultList.push(`GPU${resultList.length} - [ ${name} ]\n${loadEmoji} [ VRAM : ${used}MB / ${total}MB ] [${load}%] ${tempEmoji} Temp ${temp} °C`);
                     });
                 }
             }
-    
+
             // Check for AMD
             let [amdToolOk, amdToolOut] = GLib.spawn_command_line_sync("sh -c \"command -v rocm-smi\"");
             if (amdToolOk && amdToolOut && ByteArray.toString(amdToolOut).trim() !== "") {
@@ -571,32 +566,22 @@ export default class mainShow extends Extension {
                             let used = parseInt(gpu["VRAM Used Memory (B)"]) / (1024 * 1024);
                             let total = parseInt(gpu["VRAM Total Memory (B)"]) / (1024 * 1024);
                             let temp = gpu["Temperature (C)"];
-    
+
                             let load = Math.round((used / total) * 100);
-    
-                            let loadEmoji = "⬜️";
-                            if (load >= 80) loadEmoji = "🟥";
-                            else if (load >= 60) loadEmoji = "🟧";
-                            else if (load >= 50) loadEmoji = "🟨";
-                            else if (load >= 40) loadEmoji = "🟩";
-                            else loadEmoji = "⬜️";
-    
+                            let loadEmoji = getStatusEmoji(load, [80, 60, 50, 40]);
+
                             let tempEmoji = "⬜️";
                             if (temp !== "N/A") {
                                 let tempNum = parseFloat(temp);
-                                if (tempNum >= 80) tempEmoji = "🟥";
-                                else if (tempNum >= 70) tempEmoji = "🟧";
-                                else if (tempNum >= 55) tempEmoji = "🟨";
-                                else if (tempNum >= 40) tempEmoji = "🟩";
-                                else tempEmoji = "⬜️";
+                                tempEmoji = getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
                             }
-    
-                            resultList.push(`GPU${resultList.length} - [ ${name} ]\n${loadEmoji} [ VRAM : ${Math.round(used)}MB / ${Math.round(total)}MB ] [${load}%] ${tempEmoji} Temp [${temp}°C]`);
+
+                            resultList.push(`GPU${resultList.length} - [ ${name} ]\n${loadEmoji} [ VRAM : ${Math.round(used)}MB / ${Math.round(total)}MB ] [${load}%] ${tempEmoji} Temp ${temp} °C`);
                         }
                     }
                 }
             }
-    
+
             let [intelOk, intelOut] = GLib.spawn_command_line_sync("sh -c \"lspci | grep -i 'VGA' | grep -i 'Intel'\"");
             if (intelOk && intelOut) {
                 let intelData = ByteArray.toString(intelOut).trim();
@@ -618,13 +603,13 @@ export default class mainShow extends Extension {
                     }
                 }
             }
-    
+
             return resultList.length > 0 ? resultList.join('\n\n') : 'GPU info not available (sudo or drivers may be required)';
         } catch (e) {
             logError(`Error fetching GPU info: ${e}`);
             return 'Error fetching GPU info';
         }
-    }           
+    }
 
     _updateGpuData() {
         if (!this._gpuBox) return true;
@@ -727,11 +712,7 @@ export default class mainShow extends Extension {
         const percentNum = ((used / total) * 100);
         const percent = percentNum.toFixed(1);
     
-        let loadEmoji = "⬜️";
-        if (percentNum >= 80) loadEmoji = "🟥";
-        else if (percentNum >= 60) loadEmoji = "🟧";
-        else if (percentNum >= 50) loadEmoji = "🟨";
-        else if (percentNum >= 40) loadEmoji = "🟩";
+        let loadEmoji = getStatusEmoji(percentNum, [80, 60, 50, 40]);
     
         return {
             max: `${totalGB} GB`,
@@ -760,6 +741,90 @@ export default class mainShow extends Extension {
         }
         return true;
     } 
+
+    // ========== STORAGE ========== //
+    _getCachedStorageInfo() {
+        const now = Date.now();
+        if (this._cache.storageInfo.data && 
+            now - this._cache.storageInfo.timestamp < this._cacheTTL.storageInfo) {
+            return this._cache.storageInfo.data;
+        }
+
+        const storageInfo = this._getStorageInfo();
+        this._cache.storageInfo = {
+            data: storageInfo,
+            timestamp: now
+        };
+        return storageInfo;
+    }
+
+    _getStorageInfo() {
+        let [ok, out, err, exit] = GLib.spawn_command_line_sync("df -h");
+        if (!ok || !out) return "Disk info unavailable";
+
+        const output = ByteArray.toString(out);
+        const lines = output.trim().split("\n").slice(1);
+
+        let result = [];
+
+        for (let line of lines) {
+            line = line.trim();
+            const parts = line.split(/\s+/);
+            if (parts.length >= 6) {
+                const filesystem = parts[0];
+                const size = parts[1];
+                const used = parts[2];
+                const available = parts[3];
+                const use_percent = parts[4];
+                const mount = parts[5];
+
+                let percent = parseInt(use_percent.replace('%', ''));
+                let loadEmoji = getStatusEmoji(percent, [80, 60, 50, 40]);
+
+                if (!filesystem.startsWith("/dev/")) continue;
+
+                result.push(`- ${filesystem} (  ${mount}  )\n${loadEmoji} [ ${used} / ${size} ] [${use_percent}] Avail ${available}\n`);
+            }
+        }
+
+        return result.length > 0 ? result.join("\n") : "No real devices found";
+    }
+
+    _updateStorageInfo() {
+        if (!this._storageBox) return true;
+        
+        const storageInfo = this._getCachedStorageInfo();
+        const storageInfoLines = typeof storageInfo === 'string' 
+            ? storageInfo.split('\n') 
+            : storageInfo.flatMap(entry => entry.split('\n'));
+        
+        const children = this._storageBox.get_children();
+        const existingCount = children.length;
+        const newCount = storageInfoLines.length;
+        
+        for (let i = 0; i < Math.min(existingCount, newCount); i++) {
+            if (children[i].text !== storageInfoLines[i]) {
+                children[i].text = storageInfoLines[i];
+            }
+        }
+        
+        if (existingCount < newCount) {
+            for (let i = existingCount; i < newCount; i++) {
+                const label = new St.Label({
+                    text: storageInfoLines[i],
+                    style: 'font-weight: bold; font-size: 11px;',
+                    x_expand: true
+                });
+                this._storageBox.add_child(label);
+            }
+        }
+        else if (existingCount > newCount) {
+            for (let i = newCount; i < existingCount; i++) {
+                children[i].hide();
+            }
+        }
+        return true;
+    }
     
     // ========== MAIN SCREEN UI ========== // ======================================================================================================================================//
     _showMainScreen() {
@@ -792,7 +857,9 @@ export default class mainShow extends Extension {
         const space1_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
         const ipAndWiFi_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
         const space2_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.025));
-        const Memory_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 2));
+        const Memory_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.12));
+        const space3_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.025));
+        const Storage_LeftColumn = this._createColumn_height(Math.floor(popupHeight * 0.24));
 
         // ========== CREATE RIGHT ========== //
         const space0_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.14));
@@ -800,7 +867,7 @@ export default class mainShow extends Extension {
         const space1_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.05));
         const Processor_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.35));
         const space2_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.045));
-        const Graphics_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.22));
+        const Graphics_RightColumn = this._createColumn_height(Math.floor(popupHeight * 0.24));
 
         // ========== CREATE END ========== //
         const topEndColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
@@ -820,6 +887,8 @@ export default class mainShow extends Extension {
         leftColumn.add_child(ipAndWiFi_LeftColumn);
         leftColumn.add_child(space2_LeftColumn);
         leftColumn.add_child(Memory_LeftColumn);
+        leftColumn.add_child(space3_LeftColumn);
+        leftColumn.add_child(Storage_LeftColumn);
 
         // ========== DEVICE PROFILE ========== //
         const userName = GLib.get_user_name();
@@ -922,7 +991,7 @@ export default class mainShow extends Extension {
 
         this._memoryUse = new St.Label({
             text: `${loadEmoji} [ ${use} / ${max} ] [${percent}]`,
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 13px;`
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
         });
 
         this._memoryCache = new St.Label({
@@ -933,6 +1002,41 @@ export default class mainShow extends Extension {
         Memory_LeftColumn.add_child(memoryHead);
         Memory_LeftColumn.add_child(this._memoryUse);
         Memory_LeftColumn.add_child(this._memoryCache);
+
+        // ========== DEVICE STORAGE ========== //
+        const storageHead = new St.Label({
+            text: 'Storage',
+            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+        });
+
+        this._storageBox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            y_expand: true
+        });
+
+        const storage_scrollView = new St.ScrollView({
+            style_class: 'custom-scroll',
+            overlay_scrollbars: true,
+            enable_mouse_scrolling: true,
+            x_expand: true,
+            y_expand: true
+        });
+        storage_scrollView.set_child(this._storageBox);
+
+        const storageInfoLines = this._getStorageInfo().split('\n');
+
+        storageInfoLines.forEach((line) => {
+            const label = new St.Label({
+                text: line,
+                style: 'font-weight: bold; font-size: 11px;',
+                x_expand: true
+            });
+            this._storageBox.add_child(label);
+        });
+
+        Storage_LeftColumn.add_child(storageHead);
+        Storage_LeftColumn.add_child(storage_scrollView);
 
         // ========== RIGHT COLUMN ========== // ====================================================================================================================================//
         rightColumn.add_child(space0_RightColumn);
@@ -1035,8 +1139,7 @@ export default class mainShow extends Extension {
                         });
                         this._gpuBox.add_child(label);
                     });
-
-                    this._gpuBox.add_child(new St.Label({ text: ' ', style: 'font-size: 8px;' }));
+                    this._gpuBox.add_child(new St.Label({ text: ' ', style: 'font-size: 11px;' }));
                 }
 
                 currentBlock = [line];
@@ -1106,6 +1209,7 @@ export default class mainShow extends Extension {
             this._updateCPUInfo();
             this._updateGpuData();
             this._updateMemoryInfo();
+            this._updateStorageInfo();
             return true;
         });
     }
