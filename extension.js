@@ -35,8 +35,8 @@ export default class mainShow extends Extension {
         };
 
         this._cacheTTL = {
-            gpuInfo: 5000,       // 5 s
-            cpuInfo: 2000,       // 2 s
+            gpuInfo: 2000,       // 2 s
+            cpuInfo: 1000,       // 1 s
             memoryInfo: 3000,    // 3 s
             storageInfo: 60000,  // 1 m
             systemInfo: 600000,  // 10 m
@@ -826,155 +826,192 @@ export default class mainShow extends Extension {
     }
 
     // ========== RAM ========== //
-    _getCachedMemoryInfo() {
+    _getCachedMemoryInfoAsync(callback) {
         const now = Date.now();
-        if (this._cache.memoryInfo.data && 
+        if (this._cache.memoryInfo.data &&
             now - this._cache.memoryInfo.timestamp < this._cacheTTL.memoryInfo) {
-            return this._cache.memoryInfo.data;
+            callback(this._cache.memoryInfo.data);
+            return;
         }
 
-        const memoryInfo = this._getMemoryInfo();
-        this._cache.memoryInfo = {
-            data: memoryInfo,
-            timestamp: now
-        };
-        return memoryInfo;
+        this._getMemoryInfoAsync((memoryInfo) => {
+            this._cache.memoryInfo = {
+                data: memoryInfo,
+                timestamp: now
+            };
+            callback(memoryInfo);
+        });
     }
 
-    _getMemoryInfo() {
-        const meminfo = GLib.file_get_contents('/proc/meminfo')[1].toString();
-    
-        const toKB = key => {
-            const match = meminfo.match(new RegExp(`^${key}:\\s+(\\d+)\\skB`, 'm'));
-            return match ? parseInt(match[1], 10) : 0;
-        };
-    
-        const total = toKB('MemTotal');
-        const free = toKB('MemFree');
-        const buffers = toKB('Buffers');
-        const cached = toKB('Cached');
-        const sreclaimable = toKB('SReclaimable');
-        const shmem = toKB('Shmem');
-    
-        const used = total - free - buffers - cached - sreclaimable + shmem;
-    
-        const totalGB = (total / 1024 / 1024).toFixed(1);
-        const usedGB = (used / 1024 / 1024).toFixed(1);
-        const cacheGB = ((cached + sreclaimable) / 1024 / 1024).toFixed(1);
-        const percentNum = ((used / total) * 100);
-        const percent = percentNum.toFixed(1);
-    
-        let loadEmoji = getStatusEmoji(percentNum, [80, 60, 50, 40]);
-    
-        return {
-            max: `${totalGB} GB`,
-            use: `${usedGB}`,
-            percent: `${percent}%`,
-            cache: `${cacheGB} GB`,
-            loadEmoji: loadEmoji
-        };
-    }      
+    _getMemoryInfoAsync(callback) {
+        let subprocess = new Gio.Subprocess({
+            argv: [defaultShell, '-c', 'free -k'],
+            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+        });
+
+        subprocess.init(null);
+
+        subprocess.communicate_utf8_async(null, null, (proc, res) => {
+            try {
+                let [, stdout] = proc.communicate_utf8_finish(res);
+                if (!stdout) {
+                    callback({ error: "Memory info unavailable" });
+                    return;
+                }
+
+                const lines = stdout.trim().split('\n');
+                const memLine = lines.find(line => line.toLowerCase().startsWith("mem:"));
+
+                if (!memLine) {
+                    callback({ error: "Unable to parse memory data" });
+                    return;
+                }
+
+                const parts = memLine.trim().split(/\s+/);
+                const [total, used, free, shared, buff_cache, available] = parts.slice(1).map(Number);
+
+                const totalGB = (total / 1024 / 1024).toFixed(1);
+                const usedGB = (used / 1024 / 1024).toFixed(1);
+                const cacheGB = (buff_cache / 1024 / 1024).toFixed(1);
+                const percentNum = (used / total) * 100;
+                const percent = percentNum.toFixed(1);
+                const loadEmoji = getStatusEmoji(percentNum, [80, 60, 50, 40]);
+
+                callback({
+                    max: `${totalGB} GB`,
+                    use: `${usedGB}`,
+                    percent: `${percent}%`,
+                    cache: `${cacheGB} GB`,
+                    loadEmoji
+                });
+            } catch (e) {
+                logError(e);
+                callback({ error: "Error reading memory info" });
+            }
+        });
+    }
 
     _updateMemoryInfo() {
         if (!this._memoryUse || !this._memoryCache) return true;
-    
-        const memoryInfo = this._getCachedMemoryInfo();
-        const { use, max, percent, cache, loadEmoji } = memoryInfo;
-        
-        const newUseText = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
-        const newCacheText = `Cache ${cache}`;
 
-        if (this._memoryUse.text !== newUseText) {
-            this._memoryUse.text = newUseText;
-        }
-        
-        if (this._memoryCache.text !== newCacheText) {
-            this._memoryCache.text = newCacheText;
-        }
+        this._getCachedMemoryInfoAsync((memoryInfo) => {
+            if (memoryInfo.error) {
+                this._memoryUse.text = memoryInfo.error;
+                this._memoryCache.text = '';
+                return;
+            }
+
+            const { use, max, percent, cache, loadEmoji } = memoryInfo;
+            
+            const newUseText = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
+            const newCacheText = `Cache ${cache}`;
+
+            if (this._memoryUse.text !== newUseText) {
+                this._memoryUse.text = newUseText;
+            }
+
+            if (this._memoryCache.text !== newCacheText) {
+                this._memoryCache.text = newCacheText;
+            }
+        });
+
         return true;
-    } 
+    }
 
     // ========== STORAGE ========== //
-    _getCachedStorageInfo() {
+    _getCachedCStorageInfoAsync(callback) {
         const now = Date.now();
         if (this._cache.storageInfo.data && 
             now - this._cache.storageInfo.timestamp < this._cacheTTL.storageInfo) {
-            return this._cache.storageInfo.data;
+            callback(this._cache.storageInfo.data);
+            return;
         }
 
-        const storageInfo = this._getStorageInfo();
-        this._cache.storageInfo = {
-            data: storageInfo,
-            timestamp: now
-        };
-        return storageInfo;
+        this._getStorageInfoAsync((storageInfo) => {
+            this._cache.storageInfo = {
+                data: storageInfo,
+                timestamp: now
+            };
+            callback(storageInfo);
+        });
     }
 
-    _getStorageInfo() {
-        let [ok, out, err, exit] = GLib.spawn_command_line_sync("df -h");
-        if (!ok || !out) return "Disk info unavailable";
+    _getStorageInfoAsync(callback) {
+        let subprocess = new Gio.Subprocess({
+            argv: [defaultShell, '-c', 'df -h'],
+            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+        });
 
-        const output = ByteArray.toString(out);
-        const lines = output.trim().split("\n").slice(1);
+        subprocess.init(null);
 
-        let result = [];
+        subprocess.communicate_utf8_async(null, null, (proc, res) => {
+            try {
+                let [, stdout] = proc.communicate_utf8_finish(res);
+                if (!stdout) {
+                    callback("Disk info unavailable");
+                    return;
+                }
 
-        for (let line of lines) {
-            line = line.trim();
-            const parts = line.split(/\s+/);
-            if (parts.length >= 6) {
-                const filesystem = parts[0];
-                const size = parts[1];
-                const used = parts[2];
-                const available = parts[3];
-                const use_percent = parts[4];
-                const mount = parts[5];
+                const output = stdout.trim();
+                const lines = output.split("\n").slice(1);
+                let result = [];
 
-                let percent = parseInt(use_percent.replace('%', ''));
-                let loadEmoji = getStatusEmoji(percent, [80, 60, 50, 40]);
+                for (let line of lines) {
+                    const parts = line.trim().split(/\s+/);
+                    if (parts.length >= 6) {
+                        const [filesystem, size, used, available, use_percent, mount] = parts;
 
-                if (!filesystem.startsWith("/dev/")) continue;
+                        if (!filesystem.startsWith("/dev/")) continue;
 
-                result.push(`- ${filesystem} (  ${mount}  )\n${loadEmoji} [ ${used} / ${size} ] [${use_percent}] Avail ${available}\n`);
+                        let percent = parseInt(use_percent.replace('%', ''));
+                        let loadEmoji = getStatusEmoji(percent, [80, 60, 50, 40]);
+
+                        result.push(`- ${filesystem} (  ${mount}  )\n${loadEmoji} [ ${used} / ${size} ] [${use_percent}] Avail ${available}\n`);
+                    }
+                }
+
+                callback(result.length > 0 ? result.join("\n") : "No real devices found");
+            } catch (e) {
+                logError(e);
+                callback("Error reading storage data");
             }
-        }
-
-        return result.length > 0 ? result.join("\n") : "No real devices found";
+        });
     }
 
     _updateStorageInfo() {
         if (!this._storageBox) return true;
-        
-        const storageInfo = this._getCachedStorageInfo();
-        const storageInfoLines = typeof storageInfo === 'string' 
-            ? storageInfo.split('\n') 
-            : storageInfo.flatMap(entry => entry.split('\n'));
-        
-        const children = this._storageBox.get_children();
-        const existingCount = children.length;
-        const newCount = storageInfoLines.length;
-        
-        for (let i = 0; i < Math.min(existingCount, newCount); i++) {
-            if (children[i].text !== storageInfoLines[i]) {
-                children[i].text = storageInfoLines[i];
+
+        this._getCachedCStorageInfoAsync((storageInfo) => {
+            const storageInfoLines = typeof storageInfo === 'string'
+                ? storageInfo.split('\n')
+                : storageInfo.flatMap(entry => entry.split('\n'));
+
+            const children = this._storageBox.get_children();
+            const existingCount = children.length;
+            const newCount = storageInfoLines.length;
+
+            for (let i = 0; i < Math.min(existingCount, newCount); i++) {
+                if (children[i].text !== storageInfoLines[i]) {
+                    children[i].text = storageInfoLines[i];
+                }
             }
-        }
-        
-        if (existingCount < newCount) {
-            for (let i = existingCount; i < newCount; i++) {
-                const label = new St.Label({
-                    text: storageInfoLines[i],
-                    style: 'font-weight: bold; font-size: 11px;',
-                    x_expand: true
-                });
-                this._storageBox.add_child(label);
+
+            if (existingCount < newCount) {
+                for (let i = existingCount; i < newCount; i++) {
+                    const label = new St.Label({
+                        text: storageInfoLines[i],
+                        style: 'font-weight: bold; font-size: 11px;',
+                        x_expand: true
+                    });
+                    this._storageBox.add_child(label);
+                }
+            } else if (existingCount > newCount) {
+                for (let i = newCount; i < existingCount; i++) {
+                    children[i].hide();
+                }
             }
-        }
-        else if (existingCount > newCount) {
-            for (let i = newCount; i < existingCount; i++) {
-                children[i].hide();
-            }
-        }
+        });
+
         return true;
     }
 
@@ -1104,8 +1141,7 @@ export default class mainShow extends Extension {
         // ========== CREATE END ========== //
         const topEndColumn = this._createColumn_height(Math.floor(popupHeight * 0.1));
 
-        this._enableDrag(leftColumn);
-        this._enableDrag(rightColumn);
+        this._enableDrag(this._main_screen);
 
         this._main_screen.add_child(frontColumn);
         this._main_screen.add_child(leftColumn);
@@ -1231,25 +1267,44 @@ export default class mainShow extends Extension {
         ipAndWiFi_LeftColumn.add_child(localipRow);
 
          // ========== DEVICE MEMORY ========== //
-        const { max, use, percent, cache, loadEmoji} = this._getMemoryInfo();
         const memoryHead = new St.Label({
             text: 'Memory',
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
 
         this._memoryUse = new St.Label({
-            text: `${loadEmoji} [ ${use} / ${max} ] [${percent}]`,
+            text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
         });
 
         this._memoryCache = new St.Label({
-            text: `Cache ${cache}`,
+            text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
         });
 
         Memory_LeftColumn.add_child(memoryHead);
         Memory_LeftColumn.add_child(this._memoryUse);
         Memory_LeftColumn.add_child(this._memoryCache);
+
+        this._getCachedMemoryInfoAsync((memoryInfo) => {
+            if (memoryInfo.error) {
+                this._memoryUse.text = memoryInfo.error;
+                this._memoryCache.text = '';
+            } else {
+                const { use, max, percent, cache, loadEmoji } = memoryInfo;
+                
+                const newUseText = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
+                const newCacheText = `Cache ${cache}`;
+
+                if (this._memoryUse.text !== newUseText) {
+                    this._memoryUse.text = newUseText;
+                }
+
+                if (this._memoryCache.text !== newCacheText) {
+                    this._memoryCache.text = newCacheText;
+                }
+            }
+        });
 
         // ========== DEVICE STORAGE ========== //
         const storageHead = new St.Label({
@@ -1272,15 +1327,19 @@ export default class mainShow extends Extension {
         });
         storage_scrollView.set_child(this._storageBox);
 
-        const storageInfoLines = this._getStorageInfo().split('\n');
+        this._getCachedCStorageInfoAsync((storageInfo) => {
+            const storageInfoLines = typeof storageInfo === 'string'
+                ? storageInfo.split('\n')
+                : storageInfo.flatMap(entry => entry.split('\n'));
 
-        storageInfoLines.forEach((line) => {
-            const label = new St.Label({
-                text: line,
-                style: 'font-weight: bold; font-size: 11px;',
-                x_expand: true
+            storageInfoLines.forEach((line) => {
+                const label = new St.Label({
+                    text: line,
+                    style: 'font-weight: bold; font-size: 11px;',
+                    x_expand: true
+                });
+                this._storageBox.add_child(label);
             });
-            this._storageBox.add_child(label);
         });
 
         Storage_LeftColumn.add_child(storageHead);

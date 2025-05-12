@@ -1,2 +1,0 @@
-mkdir -p ~/.local/share/gnome-shell/extensions/systeminfo@LalaloyXyz
-cp -r /home/pleumlookchill/Documents/systeminfo@LalaloyXyz/* ~/.local/share/gnome-shell/extensions/systeminfo@LalaloyXyz/
