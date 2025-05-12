@@ -6,8 +6,8 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
-
 const ByteArray = imports.byteArray;
+let defaultShell = GLib.getenv('SHELL')?.includes('zsh') ? 'zsh' : 'bash';
 
 const getStatusEmoji = (value, thresholds) => {
     if (value >= thresholds[0]) return "🟥";
@@ -65,25 +65,17 @@ export default class mainShow extends Extension {
             text: `Info`,
             y_align: Clutter.ActorAlign.CENTER,
         });
-
         this._indicator.add_child(this._label);
 
         this._indicator.connect('button-press-event', () => {
-            const isActive = this._indicator.has_style_class_name('active');
-
-            if (isActive) {
-                this._indicator.remove_style_class_name('active');
+            if (this._main_screen) {
                 this._destroyMainScreen();
             } else {
-                this._indicator.add_style_class_name('active');
                 this._showMainScreen();
             }
         });
 
         Main.panel.addToStatusArea(this.uuid, this._indicator);
-
-        this._uptimeTimeoutId = null;
-        this._deviceWithUptime = null;
     }
 
     _updateThemeColors() {
@@ -492,7 +484,7 @@ export default class mainShow extends Extension {
             
             let result = [];
             processorIds.sort((a, b) => parseInt(a) - parseInt(b)).forEach((pid) => {
-                let coreName = `Core-${String(pid).padStart(2, '0')}    [`;
+                let coreName = `Core-${String(pid).padStart(2, '0')}    |`;
                 let speed = coreSpeeds[pid] || "N/A";
                 let coreId = coreIdMap[pid] || "0";
                 let temp = coreTemps[coreId] || "N/A";
@@ -506,7 +498,7 @@ export default class mainShow extends Extension {
                 }
                 
                 let speedStr = `${speed} MHz`.padEnd(10);
-                let tempStr = `]    ${tempEmoji} Temp   ${temp} °C`;
+                let tempStr = `|    ${tempEmoji} Temp   ${temp} °C`;
                 
                 if (speed < 1000) 
                     result.push(`${speedEmoji} ${coreName}       ${speedStr}   ${tempStr}`);
@@ -878,74 +870,82 @@ export default class mainShow extends Extension {
     }
 
     // ========== POWER ========== //
-    _getCachedPowerInfo() {
+    _getCachedPowerInfoAsync(callback) {
         const now = Date.now();
-        if (this._cache.powerInfo.data && 
+
+        if (this._cache.powerInfo.data &&
             now - this._cache.powerInfo.timestamp < this._cacheTTL.powerInfo) {
-            return this._cache.powerInfo.data;
+            callback(this._cache.powerInfo.data);
+            return;
         }
 
-        const powerInfo = this._getPowerInfo();
-        this._cache.powerInfo = {
-            data: powerInfo,
-            timestamp: now
-        };
-        return powerInfo;
+        this._getPowerInfoAsync((info) => {
+            this._cache.powerInfo = {
+                data: info,
+                timestamp: now
+            };
+            callback(info);
+        });
     }
 
-    _getPowerInfo() {
-        try {
-            let [success, stdout, stderr, exitCode] = GLib.spawn_command_line_sync(
-                'bash -c "upower -i $(upower -e | grep BAT) | grep -E \\"state|percentage|time|energy-rate\\""'
-            );
-            
-            if (!success || exitCode !== 0) {
-                return "Power data unavailable";
-            }
-            
-            let output = new TextDecoder().decode(stdout);
-            
-            let state = "Unknown";
-            let percentage = "";
-            let wattage = "";
-            let time = "";
-            
-            let stateMatch = output.match(/state:\s+(\w+)/i);
-            if (stateMatch && stateMatch[1]) {
-                state = stateMatch[1].charAt(0).toUpperCase() + stateMatch[1].slice(1);
-            }
-            
-            let percentMatch = output.match(/percentage:\s+(\d+(\.\d+)?)%/i);
-            if (percentMatch && percentMatch[1]) {
-                percentage = parseFloat(percentMatch[1]).toFixed(1);
-            }
-            
-            let rateMatch = output.match(/energy-rate:\s+(\d+(\.\d+)?)\s+W/i);
-            if (rateMatch && rateMatch[1]) {
-                wattage = parseFloat(rateMatch[1]).toFixed(2);
-            }
+    _getPowerInfoAsync(callback) {
+        let subprocess = new Gio.Subprocess({
+            argv: [defaultShell, '-c', 'upower -i $(upower -e | grep BAT) | grep -E "state|percentage|time|energy-rate"'],
+            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+        });
 
-            let timeMatch = output.match(/time to (empty|full):\s+(.+)/i);
-            if (timeMatch) {
-                time = timeMatch[2].trim();
+        subprocess.init(null);
+
+        subprocess.communicate_utf8_async(null, null, (proc, res) => {
+            try {
+                let [, stdout] = proc.communicate_utf8_finish(res);
+                let output = stdout;
+
+                let state = "";
+                let percentage = "";
+                let wattage = "";
+                let time = "";
+
+                let stateMatch = output.match(/state:\s+(\w+)/i);
+                if (stateMatch && stateMatch[1]) {
+                    state = stateMatch[1].charAt(0).toUpperCase() + stateMatch[1].slice(1);
+                }
+
+                let percentMatch = output.match(/percentage:\s+(\d+(\.\d+)?)%/i);
+                if (percentMatch && percentMatch[1]) {
+                    percentage = parseFloat(percentMatch[1]).toFixed(1);
+                }
+
+                let rateMatch = output.match(/energy-rate:\s+(\d+(\.\d+)?)\s+W/i);
+                if (rateMatch && rateMatch[1]) {
+                    wattage = parseFloat(rateMatch[1]).toFixed(2);
+                }
+
+                let timeMatch = output.match(/time to (empty|full):\s+(.+)/i);
+                if (timeMatch) {
+                    time = timeMatch[2].trim();
+                }
+
+                let info = `${percentage}% | ${wattage}W\n${state}${time ? " | " + time : ""}`;
+                callback(info);
+            } catch (e) {
+                logError(e);
+                callback("Error reading power data");
             }
-            
-            return `${percentage}% | ${wattage}W\n${state}${time ? " | " + time : ""}`;
-        } catch (e) {
-            logError(e);
-            return "Error reading power data";
-        }
+        });
     }
 
     _updatePowerInfo() {
         if (!this._memoryUse || !this._memoryCache) return true;
-    
-        const memoryInfo = this._getCachedPowerInfo();
-        if (this._powerShow.text !== memoryInfo) {
-            this._powerShow.text = memoryInfo;
-        }
+
+        this._getCachedPowerInfoAsync((powerInfo) => {
+            if (this._powerShow.text !== powerInfo) {
+                this._powerShow.text = powerInfo;
+            }
+        });
+
         return true;
-    } 
+    }
         
     // ========== MAIN SCREEN UI ========== // ======================================================================================================================================//
     _showMainScreen() {
@@ -1184,7 +1184,7 @@ export default class mainShow extends Extension {
         });
 
         this._powerShow = new St.Label({
-            text: this._getPowerInfo(),
+            text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
         });
 
