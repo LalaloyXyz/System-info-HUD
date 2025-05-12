@@ -1,8 +1,8 @@
 {
-    "uuid": "systeminfo@LalaloyXyz",
-    "name": "System Info",
-    "description": "Show sample device info",
-    "version": 1,
-    "shell-version": ["45", "46"],
-    "url": "https://github.com/LalaloyXyz/Device-info"
+  "uuid": "systeminfo@LalaloyXyz",
+  "name": "System Info",
+  "description": "Show sample system info",
+  "version": 1,
+  "shell-version": ["45", "46", "47", "48"],
+  "url": "https://github.com/LalaloyXyz/System-info"
 }
