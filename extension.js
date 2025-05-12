@@ -428,292 +428,401 @@ export default class mainShow extends Extension {
     }
 
     // ========== CPU ========== //
-    _getCachedCPUInfo() {
+    _getCachedCPUInfoAsync(callback) {
         const now = Date.now();
         if (this._cache.cpuInfo.data && 
             now - this._cache.cpuInfo.timestamp < this._cacheTTL.cpuInfo) {
-            return this._cache.cpuInfo.data;
+            callback(this._cache.cpuInfo.data);
+            return;
         }
 
-        const cpuInfo = this._getCPUInfo();
-        this._cache.cpuInfo = {
-            data: cpuInfo,
-            timestamp: now
-        };
-        return cpuInfo;
-    }
-
-    _getCPUInfo() {
-        try {
-            let [ok, out] = GLib.file_get_contents('/proc/cpuinfo');
-            if (!ok) return;
-            
-            let text = out.toString();
-            let modelMatch = text.match(/^model name\s+:\s+(.+)$/m);
-            let modelName = modelMatch ? modelMatch[1].trim() : "Unknown";
-            
-            let coreSpeeds = {};
-            let processorIds = [];
-            let coreIdMap = {};
-            let lines = text.split('\n');
-            let currentProcessorId = null;
-            
-            for (let line of lines) {
-                if (line.startsWith('processor')) {
-                    currentProcessorId = line.split(':')[1].trim();
-                    processorIds.push(currentProcessorId);
-                } else if (line.startsWith('core id') && currentProcessorId !== null) {
-                    let coreId = line.split(':')[1].trim();
-                    coreIdMap[currentProcessorId] = coreId;
-                } else if (line.startsWith('cpu MHz') && currentProcessorId !== null) {
-                    let speed = line.split(':')[1].trim();
-                    coreSpeeds[currentProcessorId] = Math.floor(parseFloat(speed));
-                }
-            }
-            
-            let [res, sensorOut, err, status] = GLib.spawn_command_line_sync("sensors");
-            let sensorText = sensorOut.toString();
-            let coreTemps = {};
-            let coreTempRegex = /^Core\s+(\d+):\s+\+([\d.]+)°C/mg;
-            let match;
-            while ((match = coreTempRegex.exec(sensorText)) !== null) {
-                let id = match[1];
-                let temp = parseFloat(match[2]);
-                coreTemps[id] = temp.toFixed(0);
-            }
-            
-            let result = [];
-            processorIds.sort((a, b) => parseInt(a) - parseInt(b)).forEach((pid) => {
-                let coreName = `Core-${String(pid).padStart(2, '0')}    |`;
-                let speed = coreSpeeds[pid] || "N/A";
-                let coreId = coreIdMap[pid] || "0";
-                let temp = coreTemps[coreId] || "N/A";
-                
-                let speedEmoji = getStatusEmoji(speed, [3000, 2250, 1500, 750]);
-                
-                let tempEmoji = "⬜️";
-                if (temp !== "N/A") {
-                    let tempNum = parseFloat(temp);
-                    tempEmoji = getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
-                }
-                
-                let speedStr = `${speed} MHz`.padEnd(10);
-                let tempStr = `|    ${tempEmoji} Temp   ${temp} °C`;
-                
-                if (speed < 1000) 
-                    result.push(`${speedEmoji} ${coreName}       ${speedStr}   ${tempStr}`);
-                else 
-                    result.push(`${speedEmoji} ${coreName}     ${speedStr}    ${tempStr}`);
-            });
-            
-            return {
-                cpu: modelName,
-                core: processorIds.length,
-                coreSpeeds: result
+        this._getCPUInfoAsync((cpuInfo) => {
+            this._cache.cpuInfo = {
+                data: cpuInfo,
+                timestamp: now
             };
-            
-        } catch (e) {
-            logError(e);
-        }
+            callback(cpuInfo);
+        });
     }
 
-    _updateCPUInfo() {
-        if (!this._coreBox) return true;
-    
-        const cpuInfo = this._getCachedCPUInfo();
-        if (!cpuInfo || !cpuInfo.coreSpeeds) return true;
-
-        const children = this._coreBox.get_children();
-        const existingCount = children.length;
-        const newCount = cpuInfo.coreSpeeds.length;
+    _getCPUInfoAsync(callback) {
+        let cpuInfoSubprocess = new Gio.Subprocess({
+            argv: [defaultShell, '-c', 'cat /proc/cpuinfo'],
+            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+        });
         
-        for (let i = 0; i < Math.min(existingCount, newCount); i++) {
-            if (children[i].text !== cpuInfo.coreSpeeds[i]) {
-                children[i].text = cpuInfo.coreSpeeds[i];
-            }
-        }
-        
-        if (existingCount < newCount) {
-            const fragment = new St.BoxLayout({ vertical: true });
-            for (let i = existingCount; i < newCount; i++) {
-                const label = new St.Label({
-                    text: cpuInfo.coreSpeeds[i],
-                    style: `font-weight: bold; font-size: 11px;`,
-                    x_expand: true
-                });
-                fragment.add_child(label);
-            }
-            this._coreBox.add_child(fragment);
-        } else if (existingCount > newCount) {
-            for (let i = newCount; i < existingCount; i++) {
-                children[i].hide();
-            }
-        }
-        return true;
-    }  
-    
-    // ========== GPU ========== //
-    _getCachedGpuInfo() {
-        const now = Date.now();
-        if (this._cache.gpuInfo.data && 
-            now - this._cache.gpuInfo.timestamp < this._cacheTTL.gpuInfo) {
-            return this._cache.gpuInfo.data;
-        }
-
-        const gpuInfo = this._getGpuInfo();
-        this._cache.gpuInfo = {
-            data: gpuInfo,
-            timestamp: now
-        };
-        return gpuInfo;
-    }
-
-    _getGpuInfo() {   
-        try {
-            let resultList = [];
-
-            // Check for NVIDIA
-            let [nvidiaOk, nvidiaOut] = GLib.spawn_command_line_sync("sh -c \"command -v nvidia-smi\"");
-            if (nvidiaOk && nvidiaOut && ByteArray.toString(nvidiaOut).trim() !== "") {
-                let [ok, out] = GLib.spawn_command_line_sync("sh -c \"nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu --format=csv,noheader,nounits\"");
-                if (ok && out) {
-                    let nvidiaData = ByteArray.toString(out).trim().split('\n');
-                    nvidiaData.forEach(line => {
-                        let [name, total, used, temp] = line.split(',').map(s => s.trim());
-
-                        let load = Math.round((parseInt(used) / parseInt(total)) * 100);
-                        let loadEmoji = getStatusEmoji(load, [80, 60, 50, 40]);
-                        
-                        let tempEmoji = "⬜️";
-                        if (temp !== "N/A") {
-                            let tempNum = parseFloat(temp);
-                            tempEmoji = getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
-                        }
-
-                        resultList.push(`GPU${resultList.length} - [ ${name} ]\n${loadEmoji} [ VRAM : ${used}MB / ${total}MB ] [${load}%] ${tempEmoji} Temp ${temp} °C`);
-                    });
+        cpuInfoSubprocess.init(null);
+        cpuInfoSubprocess.communicate_utf8_async(null, null, (proc, res) => {
+            try {
+                let [, stdout] = proc.communicate_utf8_finish(res);
+                let text = stdout;
+                let modelMatch = text.match(/^model name\s+:\s+(.+)$/m);
+                let modelName = modelMatch ? modelMatch[1].trim() : "Unknown";
+                
+                let coreSpeeds = {};
+                let processorIds = [];
+                let coreIdMap = {};
+                let lines = text.split('\n');
+                let currentProcessorId = null;
+                
+                for (let line of lines) {
+                    if (line.startsWith('processor')) {
+                        currentProcessorId = line.split(':')[1].trim();
+                        processorIds.push(currentProcessorId);
+                    } else if (line.startsWith('core id') && currentProcessorId !== null) {
+                        let coreId = line.split(':')[1].trim();
+                        coreIdMap[currentProcessorId] = coreId;
+                    } else if (line.startsWith('cpu MHz') && currentProcessorId !== null) {
+                        let speed = line.split(':')[1].trim();
+                        coreSpeeds[currentProcessorId] = Math.floor(parseFloat(speed));
+                    }
                 }
-            }
-
-            // Check for AMD
-            let [amdToolOk, amdToolOut] = GLib.spawn_command_line_sync("sh -c \"command -v rocm-smi\"");
-            if (amdToolOk && amdToolOut && ByteArray.toString(amdToolOut).trim() !== "") {
-                let [ok, out] = GLib.spawn_command_line_sync("sh -c \"rocm-smi --showproductname --showmemuse --json\"");
-                if (ok && out) {
-                    let jsonStr = ByteArray.toString(out).trim();
-                    let amdInfo = JSON.parse(jsonStr);
-                    for (let key in amdInfo) {
-                        let gpu = amdInfo[key];
-                        if (gpu["Card series"]) {
-                            let name = gpu["Card series"];
-                            let used = parseInt(gpu["VRAM Used Memory (B)"]) / (1024 * 1024);
-                            let total = parseInt(gpu["VRAM Total Memory (B)"]) / (1024 * 1024);
-                            let temp = gpu["Temperature (C)"];
-
-                            let load = Math.round((used / total) * 100);
-                            let loadEmoji = getStatusEmoji(load, [80, 60, 50, 40]);
-
+                
+                let sensorsSubprocess = new Gio.Subprocess({
+                    argv: [defaultShell, '-c', 'sensors'],
+                    flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+                });
+                
+                sensorsSubprocess.init(null);
+                sensorsSubprocess.communicate_utf8_async(null, null, (proc, res) => {
+                    try {
+                        let [, sensorOut] = proc.communicate_utf8_finish(res);
+                        let sensorText = sensorOut.toString();
+                        let coreTemps = {};
+                        let coreTempRegex = /^Core\s+(\d+):\s+\+([\d.]+)°C/mg;
+                        let match;
+                        while ((match = coreTempRegex.exec(sensorText)) !== null) {
+                            let id = match[1];
+                            let temp = parseFloat(match[2]);
+                            coreTemps[id] = temp.toFixed(0);
+                        }
+                        
+                        let result = [];
+                        processorIds.sort((a, b) => parseInt(a) - parseInt(b)).forEach((pid) => {
+                            let coreName = `Core-${String(pid).padStart(2, '0')}    |`;
+                            let speed = coreSpeeds[pid] || "N/A";
+                            let coreId = coreIdMap[pid] || "0";
+                            let temp = coreTemps[coreId] || "N/A";
+                            
+                            let speedEmoji = getStatusEmoji(speed, [3000, 2250, 1500, 750]);
+                            
                             let tempEmoji = "⬜️";
                             if (temp !== "N/A") {
                                 let tempNum = parseFloat(temp);
                                 tempEmoji = getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
                             }
+                            
+                            let speedStr = `${speed} MHz`.padEnd(10);
+                            let tempStr = `|    ${tempEmoji} Temp   ${temp} °C`;
+                            
+                            if (speed < 1000) 
+                                result.push(`${speedEmoji} ${coreName}       ${speedStr}   ${tempStr}`);
+                            else 
+                                result.push(`${speedEmoji} ${coreName}     ${speedStr}    ${tempStr}`);
+                        });
+                        
+                        callback({
+                            cpu: modelName,
+                            core: processorIds.length,
+                            coreSpeeds: result
+                        });
+                    } catch (e) {
+                        logError(e);
+                        callback(null);
+                    }
+                });
+            } catch (e) {
+                logError(e);
+                callback(null);
+            }
+        });
+    }
 
-                            resultList.push(`GPU${resultList.length} - [ ${name} ]\n${loadEmoji} [ VRAM : ${Math.round(used)}MB / ${Math.round(total)}MB ] [${load}%] ${tempEmoji} Temp ${temp} °C`);
+    _updateCPUInfo() {
+        if (!this._coreBox) return true;
+    
+        this._getCachedCPUInfoAsync((cpuInfo) => {
+            if (!cpuInfo || !cpuInfo.coreSpeeds) return;
+
+            const children = this._coreBox.get_children();
+            const existingCount = children.length;
+            const newCount = cpuInfo.coreSpeeds.length;
+            
+            for (let i = 0; i < Math.min(existingCount, newCount); i++) {
+                if (children[i].text !== cpuInfo.coreSpeeds[i]) {
+                    children[i].text = cpuInfo.coreSpeeds[i];
+                }
+            }
+            
+            if (existingCount < newCount) {
+                const fragment = new St.BoxLayout({ vertical: true });
+                for (let i = existingCount; i < newCount; i++) {
+                    const label = new St.Label({
+                        text: cpuInfo.coreSpeeds[i],
+                        style: `font-weight: bold; font-size: 11px;`,
+                        x_expand: true
+                    });
+                    fragment.add_child(label);
+                }
+                this._coreBox.add_child(fragment);
+            } else if (existingCount > newCount) {
+                for (let i = newCount; i < existingCount; i++) {
+                    children[i].hide();
+                }
+            }
+        });
+        return true;
+    }
+    
+    // ========== GPU ========== //
+    _getCachedGpuInfoAsync(callback) {
+        const now = Date.now();
+        if (this._cache.gpuInfo.data && 
+            now - this._cache.gpuInfo.timestamp < this._cacheTTL.gpuInfo) {
+            callback(this._cache.gpuInfo.data);
+            return;
+        }
+
+        this._getGpuInfoAsync((gpuInfo) => {
+            this._cache.gpuInfo = {
+                data: gpuInfo,
+                timestamp: now
+            };
+            callback(gpuInfo);
+        });
+    }
+
+    _getGpuInfoAsync(callback) {
+        try {
+            let resultList = [];
+            let pendingChecks = 3;
+
+            const checkComplete = () => {
+                pendingChecks--;
+                if (pendingChecks === 0) {
+                    const finalResult = resultList.length > 0 
+                        ? resultList.join('\n\n') 
+                        : 'GPU info not available (sudo or drivers may be required)';
+                    callback(finalResult);
+                }
+            };
+
+            // NVIDIA Check
+            let nvidiaSubprocess = new Gio.Subprocess({
+                argv: [defaultShell, '-c', 'command -v nvidia-smi'],
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            });
+            nvidiaSubprocess.init(null);
+            nvidiaSubprocess.communicate_utf8_async(null, null, (subprocess, res) => {
+                try {
+                    const [, stdout, stderr] = subprocess.communicate_utf8_finish(res);
+                    if (stdout.trim() !== "") {
+                        let nvidiaInfoSubprocess = new Gio.Subprocess({
+                            argv: [defaultShell, '-c', 'nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu --format=csv,noheader,nounits'],
+                            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+                        });
+                        nvidiaInfoSubprocess.init(null);
+                        nvidiaInfoSubprocess.communicate_utf8_async(null, null, (subprocess, res) => {
+                            try {
+                                const [, stdout, stderr] = subprocess.communicate_utf8_finish(res);
+                                if (stdout) {
+                                    let nvidiaData = stdout.trim().split('\n');
+                                    nvidiaData.forEach(line => {
+                                        let [name, total, used, temp] = line.split(',').map(s => s.trim());
+
+                                        let load = Math.round((parseInt(used) / parseInt(total)) * 100);
+                                        let loadEmoji = getStatusEmoji(load, [80, 60, 50, 40]);
+                                        
+                                        let tempEmoji = "⬜️";
+                                        if (temp !== "N/A") {
+                                            let tempNum = parseFloat(temp);
+                                            tempEmoji = getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
+                                        }
+
+                                        resultList.push(`GPU${resultList.length} - [ ${name} ]\n${loadEmoji} [ VRAM : ${used}MB / ${total}MB ] [${load}%] ${tempEmoji} Temp ${temp} °C`);
+                                    });
+                                }
+                                checkComplete();
+                            } catch (e) {
+                                logError(`Error processing NVIDIA GPU info: ${e}`);
+                                checkComplete();
+                            }
+                        });
+                    } else {
+                        checkComplete();
+                    }
+                } catch (e) {
+                    logError(`Error checking NVIDIA: ${e}`);
+                    checkComplete();
+                }
+            });
+
+            // AMD Check
+            let amdSubprocess = new Gio.Subprocess({
+                argv: [defaultShell, '-c', 'command -v rocm-smi'],
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            });
+            amdSubprocess.init(null);
+            amdSubprocess.communicate_utf8_async(null, null, (subprocess, res) => {
+                try {
+                    const [, stdout, stderr] = subprocess.communicate_utf8_finish(res);
+                    if (stdout.trim() !== "") {
+                        let amdInfoSubprocess = new Gio.Subprocess({
+                            argv: [defaultShell, '-c', 'rocm-smi --showproductname --showmemuse --json'],
+                            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+                        });
+                        amdInfoSubprocess.init(null);
+                        amdInfoSubprocess.communicate_utf8_async(null, null, (subprocess, res) => {
+                            try {
+                                const [, stdout, stderr] = subprocess.communicate_utf8_finish(res);
+                                if (stdout) {
+                                    let amdInfo = JSON.parse(stdout.trim());
+                                    for (let key in amdInfo) {
+                                        let gpu = amdInfo[key];
+                                        if (gpu["Card series"]) {
+                                            let name = gpu["Card series"];
+                                            let used = parseInt(gpu["VRAM Used Memory (B)"]) / (1024 * 1024);
+                                            let total = parseInt(gpu["VRAM Total Memory (B)"]) / (1024 * 1024);
+                                            let temp = gpu["Temperature (C)"];
+
+                                            let load = Math.round((used / total) * 100);
+                                            let loadEmoji = getStatusEmoji(load, [80, 60, 50, 40]);
+
+                                            let tempEmoji = "⬜️";
+                                            if (temp !== "N/A") {
+                                                let tempNum = parseFloat(temp);
+                                                tempEmoji = getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
+                                            }
+
+                                            resultList.push(`GPU${resultList.length} - [ ${name} ]\n${loadEmoji} [ VRAM : ${Math.round(used)}MB / ${Math.round(total)}MB ] [${load}%] ${tempEmoji} Temp ${temp} °C`);
+                                        }
+                                    }
+                                }
+                                checkComplete();
+                            } catch (e) {
+                                logError(`Error processing AMD GPU info: ${e}`);
+                                checkComplete();
+                            }
+                        });
+                    } else {
+                        checkComplete();
+                    }
+                } catch (e) {
+                    logError(`Error checking AMD: ${e}`);
+                    checkComplete();
+                }
+            });
+
+            // Intel/Fallback Check
+            let intelSubprocess = new Gio.Subprocess({
+                argv: [defaultShell, '-c', 'lspci | grep -i \'VGA\' | grep -i \'Intel\''],
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            });
+            intelSubprocess.init(null);
+            intelSubprocess.communicate_utf8_async(null, null, (subprocess, res) => {
+                try {
+                    const [, stdout, stderr] = subprocess.communicate_utf8_finish(res);
+                    if (stdout.trim() !== "") {
+                        let matches = stdout.match(/\[([^\]]+)\] \((rev [^\)]+)\)/);
+                        if (matches && matches.length >= 3) {
+                            let gpuModel = matches[1];
+                            resultList.push(`GPU${resultList.length} - [ ${gpuModel} ]`);
                         }
                     }
-                }
-            }
 
-            let [intelOk, intelOut] = GLib.spawn_command_line_sync("sh -c \"lspci | grep -i 'VGA' | grep -i 'Intel'\"");
-            if (intelOk && intelOut) {
-                let intelData = ByteArray.toString(intelOut).trim();
-                if (intelData !== "") {
-                    let matches = intelData.match(/\[([^\]]+)\] \((rev [^\)]+)\)/);
-                    if (matches && matches.length >= 3) {
-                        let gpuModel = matches[1];
-                        resultList.push(`GPU${resultList.length} - [ ${gpuModel} ]`);
+                    if (resultList.length === 0) {
+                        let pciSubprocess = new Gio.Subprocess({
+                            argv: [defaultShell, '-c', 'lspci | grep -E \'VGA|3D\''],
+                            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+                        });
+                        pciSubprocess.init(null);
+                        pciSubprocess.communicate_utf8_async(null, null, (subprocess, res) => {
+                            try {
+                                const [, stdout, stderr] = subprocess.communicate_utf8_finish(res);
+                                if (stdout.trim() !== "") {
+                                    resultList = stdout.trim().split('\n').map(line => line.replace(/.*: /, ''));
+                                }
+                                checkComplete();
+                            } catch (e) {
+                                logError(`Error with fallback PCI check: ${e}`);
+                                checkComplete();
+                            }
+                        });
+                    } else {
+                        checkComplete();
                     }
+                } catch (e) {
+                    logError(`Error checking Intel/Fallback: ${e}`);
+                    checkComplete();
                 }
-            }
-
-            if (resultList.length === 0) {
-                let [pciOk, pciOut] = GLib.spawn_command_line_sync("sh -c \"lspci | grep -E 'VGA|3D'\"");
-                if (pciOk && pciOut) {
-                    let output = ByteArray.toString(pciOut).trim();
-                    if (output !== "") {
-                        resultList = output.split('\n').map(line => line.replace(/.*: /, ''));
-                    }
-                }
-            }
-
-            return resultList.length > 0 ? resultList.join('\n\n') : 'GPU info not available (sudo or drivers may be required)';
+            });
         } catch (e) {
             logError(`Error fetching GPU info: ${e}`);
-            return 'Error fetching GPU info';
+            callback('Error fetching GPU info');
         }
     }
 
     _updateGpuData() {
         if (!this._gpuBox) return true;
     
-        const gpuInfo = this._getCachedGpuInfo();
-        if (!gpuInfo) return true;
+        this._getCachedGpuInfoAsync((gpuInfo) => {
+            if (!gpuInfo) return true;
 
-        const lines = gpuInfo.split('\n').filter(line => line.trim() !== '');
-        let blocks = [];
-        let currentBlock = [];
-        
-        lines.forEach((line) => {
-            if (line.startsWith('GPU')) {
-                if (currentBlock.length > 0) {
-                    blocks.push(currentBlock);
-                    currentBlock = [];
+            const lines = gpuInfo.split('\n').filter(line => line.trim() !== '');
+            let blocks = [];
+            let currentBlock = [];
+            
+            lines.forEach((line) => {
+                if (line.startsWith('GPU')) {
+                    if (currentBlock.length > 0) {
+                        blocks.push(currentBlock);
+                        currentBlock = [];
+                    }
+                    currentBlock = [line];
+                } else {
+                    currentBlock.push(line);
                 }
-                currentBlock = [line];
-            } else {
-                currentBlock.push(line);
+            });
+            
+            if (currentBlock.length > 0) {
+                blocks.push(currentBlock);
             }
+
+            let allLines = [];
+            blocks.forEach((block, index) => {
+                allLines = [...allLines, ...block];
+                if (index < blocks.length - 1) {
+                    allLines.push(' ');
+                }
+            });
+
+            const children = this._gpuBox.get_children();
+            const existingCount = children.length;
+            const newCount = allLines.length;
+
+            for (let i = 0; i < Math.min(existingCount, newCount); i++) {
+                if (children[i].text !== allLines[i]) {
+                    children[i].text = allLines[i];
+                }
+            }
+
+            if (existingCount < newCount) {
+                for (let i = existingCount; i < newCount; i++) {
+                    const label = new St.Label({
+                        text: allLines[i],
+                        style: `font-weight: bold; font-size: 11px;`,
+                        x_expand: true
+                    });
+                    this._gpuBox.add_child(label);
+                }
+            } 
+            else if (existingCount > newCount) {
+                for (let i = newCount; i < existingCount; i++) {
+                    children[i].hide();
+                }
+            }
+            return true;
         });
-        
-        if (currentBlock.length > 0) {
-            blocks.push(currentBlock);
-        }
-
-        let allLines = [];
-        blocks.forEach((block, index) => {
-            allLines = [...allLines, ...block];
-            if (index < blocks.length - 1) {
-                allLines.push(' ');
-            }
-        });
-
-        const children = this._gpuBox.get_children();
-        const existingCount = children.length;
-        const newCount = allLines.length;
-
-        for (let i = 0; i < Math.min(existingCount, newCount); i++) {
-            if (children[i].text !== allLines[i]) {
-                children[i].text = allLines[i];
-            }
-        }
-
-        if (existingCount < newCount) {
-            for (let i = existingCount; i < newCount; i++) {
-                const label = new St.Label({
-                    text: allLines[i],
-                    style: `font-weight: bold; font-size: 11px;`,
-                    x_expand: true
-                });
-                this._gpuBox.add_child(label);
-            }
-        } 
-        else if (existingCount > newCount) {
-            for (let i = newCount; i < existingCount; i++) {
-                children[i].hide();
-            }
-        }
-        return true;
     }
 
     // ========== RAM ========== //
@@ -1178,19 +1287,21 @@ export default class mainShow extends Extension {
         Storage_LeftColumn.add_child(storage_scrollView);
 
         // ========== DEVICE POWER ========== //
-        const powerHead = new St.Label({
-            text: 'Power',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+        this._getCachedPowerInfoAsync((info) => {
+            const powerHead = new St.Label({
+                text: 'Power',
+                style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+            });
+
+            this._powerShow = new St.Label({
+                text: info,
+                style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+            });
+
+            Power_LeftColumn.add_child(powerHead);
+            Power_LeftColumn.add_child(this._powerShow);
         });
-
-        this._powerShow = new St.Label({
-            text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
-        });
-
-        Power_LeftColumn.add_child(powerHead);
-        Power_LeftColumn.add_child(this._powerShow);
-
+        
         // ========== RIGHT COLUMN ========== // ====================================================================================================================================//
         rightColumn.add_child(space0_RightColumn);
         rightColumn.add_child(OS_RightColumn);
@@ -1218,44 +1329,44 @@ export default class mainShow extends Extension {
         OS_RightColumn.add_child(device_Kernel);
 
         // ========== DEVICE CPU ========== //
-        const {cpu, core, coreSpeeds} = this._getCPUInfo();
-
-        const cpuHead = new St.Label({
-            text: 'Processor',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
-        });
-        const cpuName = new St.Label({
-            text: `${cpu} x ${core}`,
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
-        });
-
-        this._coreBox = new St.BoxLayout({
-            vertical: true,
-            x_expand: true,
-            y_expand: true
-        });
-
-        const cpu_scrollView = new St.ScrollView({
-            style_class: 'custom-scroll',
-            overlay_scrollbars: true,
-            enable_mouse_scrolling: true,
-            x_expand: true,
-            y_expand: true
-        });
-        cpu_scrollView.set_child(this._coreBox);
-        
-        coreSpeeds.forEach((line) => {
-            const label = new St.Label({
-                text: line,
-                style: 'font-weight:bold; font-size:11px;',
-                x_expand: true
+        this._getCachedCPUInfoAsync(({cpu, core, coreSpeeds}) => {
+            const cpuHead = new St.Label({
+                text: 'Processor',
+                style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
             });
-            this._coreBox.add_child(label);
-        });
+            const cpuName = new St.Label({
+                text: `${cpu} x ${core}`,
+                style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
+            });
 
-        Processor_RightColumn.add_child(cpuHead);
-        Processor_RightColumn.add_child(cpuName);
-        Processor_RightColumn.add_child(cpu_scrollView);
+            this._coreBox = new St.BoxLayout({
+                vertical: true,
+                x_expand: true,
+                y_expand: true
+            });
+
+            const cpu_scrollView = new St.ScrollView({
+                style_class: 'custom-scroll',
+                overlay_scrollbars: true,
+                enable_mouse_scrolling: true,
+                x_expand: true,
+                y_expand: true
+            });
+            cpu_scrollView.set_child(this._coreBox);
+
+            coreSpeeds.forEach((line) => {
+                const label = new St.Label({
+                    text: line,
+                    style: 'font-weight:bold; font-size:11px;',
+                    x_expand: true
+                });
+                this._coreBox.add_child(label);
+            });
+
+            Processor_RightColumn.add_child(cpuHead);
+            Processor_RightColumn.add_child(cpuName);
+            Processor_RightColumn.add_child(cpu_scrollView);
+        });
 
         // ========== DEVICE GPU ========== //
         const gpuHead = new St.Label({
@@ -1277,43 +1388,69 @@ export default class mainShow extends Extension {
             y_expand: true
         });
         gpu_scrollView.set_child(this._gpuBox);
-        
-        const gpuLines = this._getCachedGpuInfo().split('\n');
-        
-        let currentBlock = [];
-        gpuLines.forEach((line) => {
-            if (line.startsWith('GPU')) {
-                if (currentBlock.length > 0) {
-                    currentBlock.forEach(blockLine => {
-                        const label = new St.Label({
-                            text: blockLine,
-                            style: 'font-weight: bold; font-size: 11px;',
-                            x_expand: true
-                        });
-                        this._gpuBox.add_child(label);
-                    });
-                    this._gpuBox.add_child(new St.Label({ text: ' ', style: 'font-size: 11px;' }));
-                }
 
-                currentBlock = [line];
-            } else if (line.trim() !== '') {
-                currentBlock.push(line);
-            }
-        });
-
-        if (currentBlock.length > 0) {
-            currentBlock.forEach(blockLine => {
-                const label = new St.Label({
-                    text: blockLine,
-                    style: 'font-weight: bold; font-size: 11px;',
-                    x_expand: true
-                });
-                this._gpuBox.add_child(label);
-            });
-        }
-        
         Graphics_RightColumn.add_child(gpuHead);
-        Graphics_RightColumn.add_child(gpu_scrollView);           
+        Graphics_RightColumn.add_child(gpu_scrollView);    
+        
+        this._getCachedGpuInfoAsync((gpuInfo) => {
+            if (!gpuInfo) return true;
+
+            const lines = gpuInfo.split('\n').filter(line => line.trim() !== '');
+            let blocks = [];
+            let currentBlock = [];
+
+            lines.forEach((line) => {
+                if (line.startsWith('GPU')) {
+                    if (currentBlock.length > 0) {
+                        blocks.push(currentBlock);
+                        currentBlock = [];
+                    }
+                    currentBlock = [line];
+                } else {
+                    currentBlock.push(line);
+                }
+            });
+
+            if (currentBlock.length > 0) {
+                blocks.push(currentBlock);
+            }
+
+            let allLines = [];
+            blocks.forEach((block, index) => {
+                allLines = [...allLines, ...block];
+                if (index < blocks.length - 1) {
+                    allLines.push(' ');
+                }
+            });
+
+            const children = this._gpuBox.get_children();
+            const existingCount = children.length;
+            const newCount = allLines.length;
+
+            for (let i = 0; i < Math.min(existingCount, newCount); i++) {
+                if (children[i].text !== allLines[i]) {
+                    children[i].text = allLines[i];
+                }
+            }
+
+            if (existingCount < newCount) {
+                for (let i = existingCount; i < newCount; i++) {
+                    const label = new St.Label({
+                        text: allLines[i],
+                        style: `font-weight: bold; font-size: 11px;`,
+                        x_expand: true
+                    });
+                    this._gpuBox.add_child(label);
+                }
+            } 
+            else if (existingCount > newCount) {
+                for (let i = newCount; i < existingCount; i++) {
+                    children[i].hide();
+                }
+            }
+
+            return true;
+        });
 
         // ========== BACK COLUMN ========== // =====================================================================================================================================//
         backColumn.add_child(topEndColumn);
