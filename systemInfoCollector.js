@@ -1,5 +1,6 @@
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
+import Soup from 'gi://Soup';
 
 export class SystemInfoCollector {
     constructor() {
@@ -201,37 +202,73 @@ export class SystemInfoCollector {
 
     async getPublicIP() {
         const now = Date.now();
-        if (this._cache.publicIP.data && 
+        if (this._cache.publicIP && 
+            this._cache.publicIP.data && 
             now - this._cache.publicIP.timestamp < this._cacheTTL.publicIP) {
             return this._cache.publicIP.data;
         }
-
+        
         try {
-            const subprocess = new Gio.Subprocess({
-                argv: ['curl', '-s', 'https://api.ipify.org'],
-                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
-            });
-            subprocess.init(null);
+            const session = new Soup.Session();
             
-            const [, stdout] = await new Promise((resolve, reject) => {
-                subprocess.communicate_utf8_async(null, null, (proc, res) => {
-                    try {
-                        resolve(proc.communicate_utf8_finish(res));
-                    } catch (e) {
-                        reject(e);
-                    }
+            if (Soup.get_major_version() >= 3) {
+                // Soup 3.x (newer versions)
+                const message = Soup.Message.new('GET', 'https://api.ipify.org');
+                
+                const bytes = await new Promise((resolve, reject) => {
+                    session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (session, res) => {
+                        try {
+                            const bytes = session.send_and_read_finish(res);
+                            if (message.get_status() === 200) {
+                                resolve(bytes);
+                            } else {
+                                reject(new Error(`HTTP error: ${message.get_status()}`));
+                            }
+                        } catch (e) {
+                            reject(e);
+                        }
+                    });
                 });
-            });
-
-            const ip = stdout.toString().trim();
-            this._cache.publicIP = {
-                data: ip,
-                timestamp: now
-            };
-            return ip;
+                
+                if (bytes) {
+                    const decoder = new TextDecoder();
+                    const ip = decoder.decode(bytes.get_data());
+                    this._cache.publicIP = {
+                        data: ip.trim(),
+                        timestamp: now
+                    };
+                    return ip.trim();
+                }
+            } else {
+                // Soup 2.x (older versions)
+                const message = Soup.Message.new('GET', 'https://api.ipify.org');
+                
+                const ip = await new Promise((resolve, reject) => {
+                    session.queue_message(message, (session, message) => {
+                        if (message.status_code === 200) {
+                            resolve(message.response_body.data);
+                        } else {
+                            reject(new Error(`HTTP error: ${message.status_code}`));
+                        }
+                    });
+                });
+                
+                if (ip) {
+                    this._cache.publicIP = {
+                        data: ip.trim(),
+                        timestamp: now
+                    };
+                    return ip.trim();
+                }
+            }
         } catch (e) {
             console.error('Error fetching public IP:', e);
         }
+        
+        if (!this._cache.publicIP) {
+            this._cache.publicIP = { data: 'Error', timestamp: now };
+        }
+        
         return this._cache.publicIP.data || 'Error';
     }
 

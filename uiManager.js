@@ -770,16 +770,6 @@ export class UIManager {
     }
 
     destroyMainScreen() {
-        if (this._updateTimeoutId) {
-            GLib.source_remove(this._updateTimeoutId);
-            this._updateTimeoutId = null;
-        }
-        
-        if (this._networkUpdateTimeoutId) {
-            GLib.source_remove(this._networkUpdateTimeoutId);
-            this._networkUpdateTimeoutId = null;
-        }
-        
         if (this._main_screen) {
             Main.layoutManager.removeChrome(this._main_screen);
             this._main_screen.destroy();

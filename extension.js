@@ -18,7 +18,7 @@ export default class SystemHUD extends Extension {
 
     disable() {
         if (this._uiManager) {
-            this._uiManager.destroyMainScreen();
+            this._uiManager.destroy();
             this._uiManager = null;
         }
         this._systemInfoCollector = null;
