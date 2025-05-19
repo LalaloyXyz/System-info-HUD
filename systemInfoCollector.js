@@ -80,7 +80,9 @@ export class SystemInfoCollector {
             console.error('Failed to read /etc/os-release:', e);
         }
 
-        const osType = GLib.SIZEOF_VOID_P === 8 ? 'x86_64' : 'x86';
+        const osType = GLib.SIZEOF_VOID_P === 8 ? 
+            (GLib.getenv('PROCESSOR_ARCHITECTURE')?.includes('arm') ? 'ARM64' : 'x86_64') : 
+            (GLib.getenv('PROCESSOR_ARCHITECTURE')?.includes('arm') ? 'ARM' : 'x86');
         let kernelVersion = 'Unknown Kernel';
         
         try {
@@ -202,74 +204,39 @@ export class SystemInfoCollector {
 
     async getPublicIP() {
         const now = Date.now();
-        if (this._cache.publicIP && 
-            this._cache.publicIP.data && 
+        if (this._cache.publicIP.data && 
             now - this._cache.publicIP.timestamp < this._cacheTTL.publicIP) {
             return this._cache.publicIP.data;
         }
-        
+
         try {
             const session = new Soup.Session();
+            const message = Soup.Message.new('GET', 'https://api.ipify.org');
             
-            if (Soup.get_major_version() >= 3) {
-                // Soup 3.x (newer versions)
-                const message = Soup.Message.new('GET', 'https://api.ipify.org');
-                
-                const bytes = await new Promise((resolve, reject) => {
-                    session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (session, res) => {
-                        try {
-                            const bytes = session.send_and_read_finish(res);
-                            if (message.get_status() === 200) {
-                                resolve(bytes);
-                            } else {
-                                reject(new Error(`HTTP error: ${message.get_status()}`));
-                            }
-                        } catch (e) {
-                            reject(e);
-                        }
-                    });
+            const response = await new Promise((resolve, reject) => {
+                session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (session, res) => {
+                    try {
+                        const bytes = session.send_and_read_finish(res);
+                        resolve(bytes ? bytes.get_data() : null);
+                    } catch (e) {
+                        reject(e);
+                    }
                 });
-                
-                if (bytes) {
-                    const decoder = new TextDecoder();
-                    const ip = decoder.decode(bytes.get_data());
-                    this._cache.publicIP = {
-                        data: ip.trim(),
-                        timestamp: now
-                    };
-                    return ip.trim();
-                }
-            } else {
-                // Soup 2.x (older versions)
-                const message = Soup.Message.new('GET', 'https://api.ipify.org');
-                
-                const ip = await new Promise((resolve, reject) => {
-                    session.queue_message(message, (session, message) => {
-                        if (message.status_code === 200) {
-                            resolve(message.response_body.data);
-                        } else {
-                            reject(new Error(`HTTP error: ${message.status_code}`));
-                        }
-                    });
-                });
-                
-                if (ip) {
-                    this._cache.publicIP = {
-                        data: ip.trim(),
-                        timestamp: now
-                    };
-                    return ip.trim();
-                }
+            });
+
+            if (response) {
+                const decoder = new TextDecoder();
+                const ip = decoder.decode(response).trim();
+                this._cache.publicIP = {
+                    data: ip,
+                    timestamp: now
+                };
+                return ip;
             }
         } catch (e) {
-            console.error('Error fetching public IP:', e);
+            console.error('Failed to get public IP:', e);
         }
-        
-        if (!this._cache.publicIP) {
-            this._cache.publicIP = { data: 'Error', timestamp: now };
-        }
-        
-        return this._cache.publicIP.data || 'Error';
+        return 'Unknown';
     }
 
     async getWifiSSID() {
