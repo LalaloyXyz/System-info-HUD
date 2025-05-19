@@ -777,9 +777,9 @@ export class UIManager {
         }
 
         if (this._updateTimeoutId) {
-        GLib.source_remove(this._updateTimeoutId);
-        this._updateTimeoutId = null;
-    }
+            GLib.source_remove(this._updateTimeoutId);
+            this._updateTimeoutId = null;
+        }
     }
 
     destroy() {
