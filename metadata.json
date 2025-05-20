@@ -4,7 +4,7 @@
   "description": "A system information HUD that displays various system metrics. This extension uses ipify.org services for public IP detection and requires iwgetid for WiFi information. The extension gathers system data using various commands: 'free -h' for memory usage, 'df -h' for disk space, 'top -bn1' for CPU usage, 'iwgetid -r' for WiFi SSID, 'cat /proc/net/dev' for network stats, and 'sensors' for temperature monitoring.",
   "version": 1,
   "shell-version": [
-    "44", "45", "46", "47", "48"
+    "45", "46", "47", "48"
   ],
   "url": "https://github.com/LalaloyXyz/System-info-HUD",
   "dependencies": [
