@@ -29,7 +29,7 @@ export class SystemInfoCollector {
             publicIP: 120000,    // 2 m
             wifiSSID: 10000,     // 10 s
             powerInfo: 5000,     // 5 s
-            uptime: 1000,        // 1 s
+            uptime: 500,        // 0.5 s
             networkSpeed: 1000   // 1 s
         };
     }
@@ -374,13 +374,13 @@ export class SystemInfoCollector {
         return bps.toFixed(2) + ' B/s';
     }    
 
-     async getCPUInfo() {
+    async getCPUInfo() {
         const now = Date.now();
         if (this._cache.cpuInfo.data && 
             now - this._cache.cpuInfo.timestamp < this._cacheTTL.cpuInfo) {
             return this._cache.cpuInfo.data;
         }
-
+    
         try {
             // Get CPU info using lscpu
             const lscpuSubprocess = new Gio.Subprocess({
@@ -398,13 +398,16 @@ export class SystemInfoCollector {
                     }
                 });
             });
-
+    
             const lscpuText = lscpuOut.toString();
             const modelMatch = lscpuText.match(/Model name:\s+(.+)/);
             const modelName = modelMatch ? modelMatch[1].trim() : "Unknown CPU";
             
             const coresMatch = lscpuText.match(/CPU\(s\):\s+(\d+)/);
             const coreCount = coresMatch ? parseInt(coresMatch[1]) : 0;
+    
+            const cpumaxMatch = lscpuText.match(/CPU max MHz:\s+([\d.]+)/);
+            const cpumax = cpumaxMatch ? parseFloat(cpumaxMatch[1]) : 0;
 
             // Get CPU frequencies and core mapping
             const freqSubprocess = new Gio.Subprocess({
@@ -422,26 +425,64 @@ export class SystemInfoCollector {
                     }
                 });
             });
-
+    
             const freqText = freqOut.toString();
             const coreSpeeds = [];
             const processorToCoreMap = {};
             const lines = freqText.split('\n');
             let currentProcessorId = null;
+            let isAMD = modelName.toLowerCase().includes('amd');
 
+            // Get current CPU frequencies
+            try {
+                const freqSubprocess = new Gio.Subprocess({
+                    argv: ['sh', '-c', 'for i in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do [ -f "$i" ] && cat "$i"; done'],
+                    flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+                });
+                freqSubprocess.init(null);
+                
+                const [, freqOut] = await new Promise((resolve, reject) => {
+                    freqSubprocess.communicate_utf8_async(null, null, (proc, res) => {
+                        try {
+                            resolve(proc.communicate_utf8_finish(res));
+                        } catch (e) {
+                            reject(e);
+                        }
+                    });
+                });
+
+                const frequencies = freqOut.toString().trim().split('\n');
+                frequencies.forEach((freq, index) => {
+                    if (freq) {
+                        coreSpeeds[index] = Math.floor(parseInt(freq) / 1000); // Convert kHz to MHz
+                    }
+                });
+            } catch (e) {
+                console.error('Error reading CPU frequencies:', e);
+            }
+
+            for (let i = 0; i < coreCount; i++) {
+                if (!coreSpeeds[i]) {
+                    coreSpeeds[i] = 0;
+                }
+            }
+
+            // Unified core mapping logic for both AMD and Intel
             for (const line of lines) {
                 if (line.startsWith('processor')) {
                     currentProcessorId = line.split(':')[1].trim();
                 } else if (line.startsWith('core id') && currentProcessorId !== null) {
                     const coreId = line.split(':')[1].trim();
                     processorToCoreMap[currentProcessorId] = coreId;
-                } else if (line.startsWith('cpu MHz') && currentProcessorId !== null) {
-                    const speed = line.split(':')[1].trim();
-                    coreSpeeds[currentProcessorId] = Math.floor(parseFloat(speed));
                 }
             }
 
-            // Get CPU temperatures
+            if (isAMD && Object.keys(processorToCoreMap).length === 0) {
+                for (let i = 0; i < coreCount; i++) {
+                    processorToCoreMap[i] = Math.floor(i / 2).toString();
+                }
+            }
+
             const sensorsSubprocess = new Gio.Subprocess({
                 argv: ['sensors'],
                 flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
@@ -457,25 +498,74 @@ export class SystemInfoCollector {
                     }
                 });
             });
-
+    
             const sensorText = sensorOut.toString();
             const coreTemps = {};
-            const coreTempRegex = /^Core\s+(\d+):\s+\+([\d.]+)°C/mg;
-            let match;
-            while ((match = coreTempRegex.exec(sensorText)) !== null) {
-                const coreId = match[1];
-                const temp = parseFloat(match[2]);
-                coreTemps[coreId] = temp.toFixed(0);
+            
+            // Universal temperature patterns that work for both Intel and AMD
+            const tempPatterns = [
+                // Core temperature patterns
+                /^Core\s+(\d+):\s+\+([\d.]+)°C/mg,           // Standard core temp
+                /^Core\s+\d+\s+\(PECI\s+\d+\):\s+\+([\d.]+)°C/mg,  // PECI core temps
+                /^CPU\s+Core\s+(\d+):\s+\+([\d.]+)°C/mg,     // Alternative core temp format
+                /^Package\s+id\s+\d+:\s+\+([\d.]+)°C/mg,     // Package temp
+                /^Package\s+\d+:\s+\+([\d.]+)°C/mg,          // Alternative package temp
+                /^CPU\s+Temperature:\s+\+([\d.]+)°C/mg,      // Generic CPU temp
+                // AMD specific patterns
+                /^Tctl:\s+\+([\d.]+)°C/mg,                   // AMD Tctl
+                /^Tdie:\s+\+([\d.]+)°C/mg,                   // AMD Tdie
+                /^CPU\s+Tctl\/Tdie:\s+\+([\d.]+)°C/mg,       // Alternative AMD temp
+                // Intel specific patterns
+                /^Package\s+id\s+0:\s+\+([\d.]+)°C/mg,       // Intel package temp
+                /^Core\s+\d+\s+\(PECI\s+\d+\):\s+\+([\d.]+)°C/mg,  // Intel PECI
+                /^CPU\s+Package:\s+\+([\d.]+)°C/mg           // Intel package temp
+            ];
+            
+            let globalTemp = null;
+            let foundAnyTemp = false;
+            
+            for (const pattern of tempPatterns) {
+                let match;
+                pattern.lastIndex = 0;
+                
+                while ((match = pattern.exec(sensorText)) !== null) {
+                    const coreId = match[1] || '0';
+                    const temp = parseFloat(match[2] || match[1]);
+                    
+                    if (match[1]) {
+                        coreTemps[coreId] = temp.toFixed(0);
+                        foundAnyTemp = true;
+                    } else {
+                        globalTemp = temp;
+                    }
+                }
+            }
+            
+            if (!foundAnyTemp && globalTemp) {
+                for (let i = 0; i < Math.ceil(coreCount / 2); i++) {
+                    coreTemps[i.toString()] = globalTemp.toFixed(0);
+                }
             }
 
+            if (Object.keys(coreTemps).length === 0) {
+                const anyTempMatch = sensorText.match(/\+([\d.]+)°C/);
+                if (anyTempMatch) {
+                    const temp = parseFloat(anyTempMatch[1]);
+                    for (let i = 0; i < Math.ceil(coreCount / 2); i++) {
+                        coreTemps[i.toString()] = temp.toFixed(0);
+                    }
+                }
+            }
+    
             const result = [];
             for (let i = 0; i < coreCount; i++) {
                 const coreName = `Core-${String(i).padStart(2, '0')}    |`;
                 const speed = coreSpeeds[i] || 0;
-                const coreId = processorToCoreMap[i] || "0";
-                const temp = coreTemps[coreId] || "N/A";
+                const coreload = String(Math.round((coreSpeeds[i] / cpumax) * 100)).padStart(2, '0');
+                const physicalCoreId = processorToCoreMap[i] || "0";
+                const temp = coreTemps[physicalCoreId] || "N/A";
                 
-                const speedEmoji = this._getStatusEmoji(speed, [3000, 2250, 1500, 750]);
+                const speedEmoji = this._getStatusEmoji(coreload, [80, 60, 50, 40]);
                 let tempEmoji = "⬜️";
                 if (temp !== "N/A") {
                     const tempNum = parseFloat(temp);
@@ -483,25 +573,25 @@ export class SystemInfoCollector {
                 }
                 
                 const speedStr = `${speed} MHz`.padEnd(10);
-                const tempStr = `|    ${tempEmoji} Temp   ${temp} °C`;
+                const tempStr = `|  ${coreload}%  |   ${tempEmoji} Temp   ${temp} °C`;
                 
                 if (speed < 1000) 
                     result.push(`${speedEmoji} ${coreName}       ${speedStr}   ${tempStr}`);
                 else 
                     result.push(`${speedEmoji} ${coreName}     ${speedStr}    ${tempStr}`);
             }
-
+    
             const finalResult = {
                 cpu: modelName,
                 core: coreCount,
                 coreSpeeds: result
             };
-
+    
             this._cache.cpuInfo = {
                 data: finalResult,
                 timestamp: now
             };
-
+    
             return finalResult;
         } catch (e) {
             console.error('Error reading CPU info:', e);
