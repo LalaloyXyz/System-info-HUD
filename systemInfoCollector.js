@@ -436,9 +436,18 @@ export class SystemInfoCollector {
             // Get current CPU frequencies
             try {
                 const freqSubprocess = new Gio.Subprocess({
-                    argv: ['sh', '-c', 'for i in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do [ -f "$i" ] && cat "$i"; done'],
+                    argv: ['sh', '-c', `
+                        for i in /sys/devices/system/cpu/cpu*/cpufreq/; do
+                            if [ -f "$i/scaling_cur_freq" ]; then
+                                cat "$i/scaling_cur_freq";
+                            elif [ -f "$i/cpuinfo_cur_freq" ]; then
+                                cat "$i/cpuinfo_cur_freq";
+                            fi;
+                        done | sort -V
+                    `],                    
                     flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
                 });
+
                 freqSubprocess.init(null);
                 
                 const [, freqOut] = await new Promise((resolve, reject) => {
@@ -477,9 +486,12 @@ export class SystemInfoCollector {
                 }
             }
 
+            const threadsPerCoreMatch = lscpuText.match(/Thread\(s\) per core:\s+(\d+)/);
+            const threadsPerCore = threadsPerCoreMatch ? parseInt(threadsPerCoreMatch[1]) : 2;
+
             if (isAMD && Object.keys(processorToCoreMap).length === 0) {
                 for (let i = 0; i < coreCount; i++) {
-                    processorToCoreMap[i] = Math.floor(i / 2).toString();
+                    processorToCoreMap[i] = Math.floor(i / threadsPerCore).toString();
                 }
             }
 
@@ -542,9 +554,9 @@ export class SystemInfoCollector {
             }
             
             if (!foundAnyTemp && globalTemp) {
-                for (let i = 0; i < Math.ceil(coreCount / 2); i++) {
+                for (let i = 0; i < coreCount; i++) {
                     coreTemps[i.toString()] = globalTemp.toFixed(0);
-                }
+                }                
             }
 
             if (Object.keys(coreTemps).length === 0) {
@@ -565,12 +577,10 @@ export class SystemInfoCollector {
                 const physicalCoreId = processorToCoreMap[i] || "0";
                 const temp = coreTemps[physicalCoreId] || "N/A";
                 
-                const speedEmoji = this._getStatusEmoji(coreload, [80, 60, 50, 40]);
-                let tempEmoji = "⬜️";
-                if (temp !== "N/A") {
-                    const tempNum = parseFloat(temp);
-                    tempEmoji = this._getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
-                }
+                const speedEmoji = this._getStatusEmoji(coreload, [90, 70, 50, 30]);
+
+                const tempNum = parseFloat(temp);
+                const tempEmoji = this._getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
                 
                 const speedStr = `${speed} MHz`.padEnd(10);
                 const tempStr = `|  ${coreload}%  |   ${tempEmoji} Temp   ${temp} °C`;
@@ -660,7 +670,7 @@ export class SystemInfoCollector {
                                         let [name, total, used, temp] = line.split(',').map(s => s.trim());
 
                                         let load = Math.round((parseInt(used) / parseInt(total)) * 100);
-                                        let loadEmoji = this._getStatusEmoji(load, [80, 60, 50, 40]);
+                                        let loadEmoji = this._getStatusEmoji(load, [90, 70, 50, 30]);
                                         
                                         let tempEmoji = "⬜️";
                                         if (temp !== "N/A") {
@@ -715,7 +725,7 @@ export class SystemInfoCollector {
                                             let temp = gpu["Temperature (C)"];
 
                                             let load = Math.round((used / total) * 100);
-                                            let loadEmoji = this._getStatusEmoji(load, [80, 60, 50, 40]);
+                                            let loadEmoji = this._getStatusEmoji(load, [90, 70, 50, 30]);
 
                                             let tempEmoji = "⬜️";
                                             if (temp !== "N/A") {
@@ -821,7 +831,7 @@ export class SystemInfoCollector {
             const cacheGB = (buff_cache / 1024 / 1024).toFixed(1);
             const percentNum = (used / total) * 100;
             const percent = percentNum.toFixed(1);
-            const loadEmoji = this._getStatusEmoji(percentNum, [80, 60, 50, 40]);
+            const loadEmoji = this._getStatusEmoji(percentNum, [90, 70, 50, 30]);
 
             const result = {
                 max: `${totalGB} GB`,
