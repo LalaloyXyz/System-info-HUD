@@ -1,7 +1,7 @@
 {
   "uuid": "systemHUD@LalaloyXyz",
   "name": "System HUD",
-  "description": "This tool provides a comprehensive overview of the syst em's performance, including details about theoperating s ystem, processor, memory, storage, power usage, and grap hics. It is designed to give users and easy-to-read dash board that monitors key system parameters in real-time.",
+  "description": "Clean UI system monitor for CPU, GPU, memory, and storage._.",
   "version": 1,
   "shell-version": [
     "45", "46", "47", "48"

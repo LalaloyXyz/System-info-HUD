@@ -400,14 +400,76 @@ export class SystemInfoCollector {
             });
     
             const lscpuText = lscpuOut.toString();
-            const modelMatch = lscpuText.match(/Model name:\s+(.+)/);
-            const modelName = modelMatch ? modelMatch[1].trim() : "Unknown CPU";
+            let modelName = "Unknown CPU";
+            const modelNamePatterns = [
+                /Model name:\s+(.+)/,   // Intel, AMD, some ARM
+                /Model:\s+(.+)/,        // Some AMD/older CPUs
+                /CPU:\s+(.+)/,          // Fallback
+                /Hardware:\s+(.+)/,     // ARM
+            ];
+            for (const pattern of modelNamePatterns) {
+                const match = lscpuText.match(pattern);
+                if (match) {
+                    modelName = match[1].trim();
+                    break;
+                }
+            }
+
+            // If still unknown, fallback to /proc/cpuinfo
+            if (modelName === "Unknown CPU") {
+                // freqText is the output of /proc/cpuinfo
+                const cpuinfoMatch = lscpuText.match(/model name\s*:\s*(.+)/);
+                if (!cpuinfoMatch) {
+                    cpuinfoMatch = lscpuText.match(/Hardware\s*:\s*(.+)/);
+                }
+                if (cpuinfoMatch) {
+                    modelName = cpuinfoMatch[1].trim();
+                }
+            }
             
+            // Core count: try lscpu, then fallback to /proc/cpuinfo
+            let coreCount = 0;
             const coresMatch = lscpuText.match(/CPU\(s\):\s+(\d+)/);
-            const coreCount = coresMatch ? parseInt(coresMatch[1]) : 0;
-    
+            if (coresMatch) {
+                coreCount = parseInt(coresMatch[1]);
+            } else {
+                // Fallback: count "processor" lines in /proc/cpuinfo
+                const cpuinfoCores = lscpuText.match(/^processor\s*:/mg);
+                if (cpuinfoCores) {
+                    coreCount = cpuinfoCores.length;
+                }
+            }
+
+            // Max frequency: try lscpu, then fallback to /proc/cpuinfo
+            let cpumax = 0;
             const cpumaxMatch = lscpuText.match(/CPU max MHz:\s+([\d.]+)/);
-            const cpumax = cpumaxMatch ? parseFloat(cpumaxMatch[1]) : 0;
+            if (cpumaxMatch) {
+                cpumax = parseFloat(cpumaxMatch[1]);
+            } else {
+                // Try /sys for ARM
+                try {
+                    const cpufreqSubprocess = new Gio.Subprocess({
+                        argv: ['cat', '/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq'],
+                        flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+                    });
+                    cpufreqSubprocess.init(null);
+                    const [, cpufreqOut] = await new Promise((resolve, reject) => {
+                        cpufreqSubprocess.communicate_utf8_async(null, null, (proc, res) => {
+                            try {
+                                resolve(proc.communicate_utf8_finish(res));
+                            } catch (e) {
+                                reject(e);
+                            }
+                        });
+                    });
+                    const freq = parseInt(cpufreqOut.toString().trim());
+                    if (!isNaN(freq)) {
+                        cpumax = freq / 1000; // kHz to MHz
+                    }
+                } catch (e) {
+                    // ignore
+                }
+            }
 
             // Get CPU frequencies and core mapping
             const freqSubprocess = new Gio.Subprocess({
@@ -817,7 +879,7 @@ export class SystemInfoCollector {
             });
 
             const lines = stdout.toString().trim().split('\n');
-            const memLine = lines.find(line => line.toLowerCase().startsWith("mem:"));
+            const memLine = lines.find(line => line.trim().toLowerCase().startsWith("mem:"));
 
             if (!memLine) {
                 throw new Error("Unable to parse memory data");
