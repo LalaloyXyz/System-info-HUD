@@ -1,4 +1,4 @@
-# System Info HUD (SystemInfoCollector)
+# System Info HUD
 
 A GNOME extension that displays detailed system information in a convenient HUD. It supports most major Linux distributions and works on Intel, AMD, and ARM CPUs.
 
@@ -25,7 +25,7 @@ The following command-line tools must be available on your system:
 - `nvidia-smi` (for NVIDIA GPU info, if applicable)
 - `rocm-smi` (for AMD GPU info, if applicable)
 - `upower` (for battery info)
-- `curl` or `Soup` library (for public IP)
+- `Soup` library (for public IP)
 
 **Note:** Most of these are installed by default on GNOME-based distributions, but some (like `iwgetid`, `sensors`, `lspci`, `nvidia-smi`, `rocm-smi`) may need to be installed manually.
 
