@@ -15,7 +15,8 @@ export class UIManager {
             schema_id: 'org.gnome.desktop.interface'
         });
         this._themeChangeSignal = this._themeSettings.connect('changed::gtk-theme', 
-            this._onThemeChanged.bind(this));
+        this._onThemeChanged.bind(this));
+        this._useAnimation = true; // Default: use animation
     }
 
     createIndicator() {
@@ -23,10 +24,57 @@ export class UIManager {
         this._indicator.add_style_class_name('panel-button');
 
         this._label = new St.Label({
-            text: 'Info',
+            text: '',
             y_align: Clutter.ActorAlign.CENTER,
         });
         this._indicator.add_child(this._label);
+
+        const welcomeMessages = [
+            "Welcome! Ready to make today great?",
+            "Hello! Let's have an awesome day!",
+            "Hi there! You've got this today!",
+            "Welcome back! Time to shine!",
+            "Hey! Today's full of possibilities!",
+            "Greetings! Make today amazing!",
+            "Welcome aboard! Let's do great things!",
+            "Hi! Ready to conquer the day?"
+          ];
+
+        const welcomeText = welcomeMessages[Math.floor(Math.random() * welcomeMessages.length)];
+        const infoText = 'Info';
+        let i = 1;
+        const typingInterval = 80; // ms per character
+        this._label.text = '';
+
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
+            this._label.text = welcomeText.slice(0, i);
+            i++;
+            if (i > welcomeText.length) {
+                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 5555, () => {
+                    let j = welcomeText.length;
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
+                        j--;
+                        this._label.text = welcomeText.slice(0, j);
+                        if (j === 0) {
+                            let k = 1;
+                            GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
+                                this._label.text = infoText.slice(0, k);
+                                k++;
+                                if (k > infoText.length) {
+                                    return GLib.SOURCE_REMOVE;
+                                }
+                                return GLib.SOURCE_CONTINUE;
+                            });
+                            return GLib.SOURCE_REMOVE;
+                        }
+                        return GLib.SOURCE_CONTINUE;
+                    });
+                    return GLib.SOURCE_REMOVE;
+                });
+                return GLib.SOURCE_REMOVE;
+            }
+            return GLib.SOURCE_CONTINUE;
+        });
 
         this._indicator.connect('button-press-event', () => {
             if (this._main_screen) {
@@ -262,24 +310,29 @@ export class UIManager {
         await this._createRightColumn(rightColumn, popupHeight);
         this._createBackColumn(backColumn, popupHeight);
 
-        // Set size and position
+        // Set size
         this._main_screen.set_size(popupWidth, popupHeight);
         Main.layoutManager.addChrome(this._main_screen, {
             trackFullscreen: true,
         });
 
-        // Center the window
-        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-            if (!this._main_screen) return GLib.SOURCE_REMOVE;
-
-            const [_, natWidth] = this._main_screen.get_preferred_width(-1);
-            const [__, natHeight] = this._main_screen.get_preferred_height(-1);
-            const x = Math.floor((monitor.width - natWidth) / 2) + monitor.x;
-            const y = Math.floor((monitor.height - natHeight) / 2) + monitor.y;
-
+        const [_, natWidth] = this._main_screen.get_preferred_width(-1);
+        const [__, natHeight] = this._main_screen.get_preferred_height(-1);
+        const x = Math.floor((monitor.width - natWidth) / 2) + monitor.x;
+        const y = Math.floor((monitor.height - natHeight) / 2) + monitor.y;
+        if (this._useAnimation) {
+            this._main_screen.set_position(x, -natHeight);
+            this._main_screen.opacity = 0;
+            this._main_screen.ease({
+                y: y,
+                opacity: 255,
+                duration: 300,
+                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            });
+        } else {
             this._main_screen.set_position(x, y);
-            return GLib.SOURCE_REMOVE;
-        });
+            this._main_screen.opacity = 255;
+        }
 
         // Start update timer
         if (this._updateTimeoutId) {
@@ -815,9 +868,25 @@ export class UIManager {
 
     destroyMainScreen() {
         if (this._main_screen) {
-            Main.layoutManager.removeChrome(this._main_screen);
-            this._main_screen.destroy();
-            this._main_screen = null;
+            const [x, y] = this._main_screen.get_position();
+            const [_, natHeight] = this._main_screen.get_preferred_height(-1);
+            if (this._useAnimation) {
+                this._main_screen.ease({
+                    y: y - natHeight,
+                    opacity: 0,
+                    duration: 300,
+                    mode: Clutter.AnimationMode.EASE_IN_QUAD,
+                    onComplete: () => {
+                        Main.layoutManager.removeChrome(this._main_screen);
+                        this._main_screen.destroy();
+                        this._main_screen = null;
+                    }
+                });
+            } else {
+                Main.layoutManager.removeChrome(this._main_screen);
+                this._main_screen.destroy();
+                this._main_screen = null;
+            }
         }
 
         if (this._updateTimeoutId) {

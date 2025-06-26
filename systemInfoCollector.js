@@ -467,28 +467,30 @@ export class SystemInfoCollector {
                         cpumax = freq / 1000; // kHz to MHz
                     }
                 } catch (e) {
-                    // ignore
                 }
             }
 
             // Get CPU frequencies and core mapping
-            const freqSubprocess = new Gio.Subprocess({
-                argv: ['cat', '/proc/cpuinfo'],
-                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
-            });
-            freqSubprocess.init(null);
-            
-            const [, freqOut] = await new Promise((resolve, reject) => {
-                freqSubprocess.communicate_utf8_async(null, null, (proc, res) => {
-                    try {
-                        resolve(proc.communicate_utf8_finish(res));
-                    } catch (e) {
-                        reject(e);
-                    }
+            let freqText = '';
+            try {
+                const file = Gio.File.new_for_path('/proc/cpuinfo');
+                freqText = await new Promise((resolve, reject) => {
+                    file.load_contents_async(null, (file, res) => {
+                        try {
+                            const [success, contents] = file.load_contents_finish(res);
+                            if (success) {
+                                resolve(contents.toString());
+                            } else {
+                                reject(new Error('Failed to read /proc/cpuinfo'));
+                            }
+                        } catch (e) {
+                            reject(e);
+                        }
+                    });
                 });
-            });
-    
-            const freqText = freqOut.toString();
+            } catch (e) {
+                console.error('Error reading /proc/cpuinfo:', e);
+            }
             const coreSpeeds = [];
             const processorToCoreMap = {};
             const lines = freqText.split('\n');
