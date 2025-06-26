@@ -17,6 +17,7 @@ export class UIManager {
         this._themeChangeSignal = this._themeSettings.connect('changed::gtk-theme', 
         this._onThemeChanged.bind(this));
         this._useAnimation = true; // Default: use animation
+        this._labelTimeoutIds = []; // Track label animation timeouts
     }
 
     createIndicator() {
@@ -65,16 +66,21 @@ export class UIManager {
                                 }
                                 return GLib.SOURCE_CONTINUE;
                             });
+                            this._labelTimeoutIds.push(GLib.SOURCE_REMOVE);
                             return GLib.SOURCE_REMOVE;
                         }
                         return GLib.SOURCE_CONTINUE;
                     });
+                    this._labelTimeoutIds.push(GLib.SOURCE_REMOVE);
                     return GLib.SOURCE_REMOVE;
                 });
+                this._labelTimeoutIds.push(GLib.SOURCE_REMOVE);
                 return GLib.SOURCE_REMOVE;
             }
             return GLib.SOURCE_CONTINUE;
         });
+
+        this._labelTimeoutIds.push(GLib.SOURCE_REMOVE);
 
         this._indicator.connect('button-press-event', () => {
             if (this._main_screen) {
@@ -909,6 +915,12 @@ export class UIManager {
         if (this._indicator) {
             this._indicator.destroy();
             this._indicator = null;
+        }
+
+        // Remove label animation timeouts
+        if (this._labelTimeoutIds) {
+            this._labelTimeoutIds.forEach(id => GLib.source_remove(id));
+            this._labelTimeoutIds = [];
         }
     }
 } 
