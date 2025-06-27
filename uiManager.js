@@ -47,18 +47,18 @@ export class UIManager {
         const typingInterval = 80; // ms per character
         this._label.text = '';
 
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
+        let typingId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
             this._label.text = welcomeText.slice(0, i);
             i++;
             if (i > welcomeText.length) {
-                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 5555, () => {
+                let pauseId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 5555, () => {
                     let j = welcomeText.length;
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
+                    let eraseId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
                         j--;
                         this._label.text = welcomeText.slice(0, j);
                         if (j === 0) {
                             let k = 1;
-                            GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
+                            let infoId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
                                 this._label.text = infoText.slice(0, k);
                                 k++;
                                 if (k > infoText.length) {
@@ -66,21 +66,20 @@ export class UIManager {
                                 }
                                 return GLib.SOURCE_CONTINUE;
                             });
-                            this._labelTimeoutIds.push(GLib.SOURCE_REMOVE);
+                            this._labelTimeoutIds.push(infoId);
                             return GLib.SOURCE_REMOVE;
                         }
                         return GLib.SOURCE_CONTINUE;
                     });
-                    this._labelTimeoutIds.push(GLib.SOURCE_REMOVE);
+                    this._labelTimeoutIds.push(eraseId);
                     return GLib.SOURCE_REMOVE;
                 });
-                this._labelTimeoutIds.push(GLib.SOURCE_REMOVE);
+                this._labelTimeoutIds.push(pauseId);
                 return GLib.SOURCE_REMOVE;
             }
             return GLib.SOURCE_CONTINUE;
         });
-
-        this._labelTimeoutIds.push(GLib.SOURCE_REMOVE);
+        this._labelTimeoutIds.push(typingId);
 
         this._indicator.connect('button-press-event', () => {
             if (this._main_screen) {
