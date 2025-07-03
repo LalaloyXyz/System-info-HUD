@@ -1,4 +1,4 @@
-![My Logo](https://extensions.gnome.org/extension-data/icons/icon_8183_D52D21u.png) **System Info HUD**
+### ![My Logo](https://extensions.gnome.org/extension-data/icons/icon_8183_D52D21u.png) System Info HUD
 
 A GNOME extension that displays detailed system information in a convenient HUD. It supports most major Linux distributions and works on Intel, AMD, and ARM CPUs.
 
