@@ -6,9 +6,9 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 export class UIManager {
-    constructor(extension, systemInfoCollector) {
+    constructor(extension, systemLink) {
         this._extension = extension;
-        this._systemInfoCollector = systemInfoCollector;
+        this._systemLink = systemLink;
         this._main_screen = null;
         this._updateTimeoutId = null;
         this._themeSettings = new Gio.Settings({
@@ -491,7 +491,7 @@ export class UIManager {
         });
 
         this._deviceWithUptime = new St.Label({
-            text: await this._systemInfoCollector.getUptime(),
+            text: await this._systemLink.getUptime(),
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
             x_align: Clutter.ActorAlign.START,
         });
@@ -515,10 +515,11 @@ export class UIManager {
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         // Get initial network info
-        const { download, upload } = await this._systemInfoCollector.getNetworkSpeed();
-        const ssid = await this._systemInfoCollector.getWifiSSID();
-        const publicIP = await this._systemInfoCollector.getPublicIP();
-        const localIP = await this._systemInfoCollector.getLocalIP();
+        const networkInfo = await this._systemLink.getNetworkInfo();
+        const { download, upload } = networkInfo.networkSpeed || { download: '0', upload: '0' };
+        const ssid = networkInfo.wifiSSID || 'Unknown';
+        const publicIP = networkInfo.publicIP || 'Unknown';
+        const localIP = networkInfo.lanIP || 'Unknown';
         this._wifiSpeedLabel = new St.Label({
             text: `${ssid} ↓ ${download} ↑ ${upload}`,
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 13px;`
@@ -574,14 +575,23 @@ export class UIManager {
         column.add_child(this._memoryHead);
         column.add_child(this._memoryUse);
         column.add_child(this._memoryCache);
-        const memoryInfo = await this._systemInfoCollector.getMemoryInfo();
-        if (memoryInfo.error) {
-            this._memoryUse.text = memoryInfo.error;
+        try {
+            const memoryInfo = await this._systemLink.getMemoryInfo();
+            if (memoryInfo && memoryInfo.error) {
+                this._memoryUse.text = memoryInfo.error;
+                this._memoryCache.text = '';
+            } else if (memoryInfo) {
+                const { use, max, percent, cache, loadEmoji } = memoryInfo;
+                this._memoryUse.text = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
+                this._memoryCache.text = `Cache ${cache}`;
+            } else {
+                this._memoryUse.text = 'Error: No data';
+                this._memoryCache.text = '';
+            }
+        } catch (error) {
+            console.error('Error getting memory info:', error);
+            this._memoryUse.text = 'Error: Failed to load';
             this._memoryCache.text = '';
-        } else {
-            const { use, max, percent, cache, loadEmoji } = memoryInfo;
-            this._memoryUse.text = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
-            this._memoryCache.text = `Cache ${cache}`;
         }
     }
 
@@ -597,23 +607,33 @@ export class UIManager {
             y_expand: true
         });
         const storage_scrollView = new St.ScrollView({
-            style_class: 'custom-scroll',
+            style_class: './assets/custom-scroll',
             overlay_scrollbars: true,
             enable_mouse_scrolling: true,
             x_expand: true,
             y_expand: true
         });
         storage_scrollView.set_child(this._storageBox);
-        const storageInfo = await this._systemInfoCollector.getStorageInfo();
-        const storageInfoLines = storageInfo.split('\n');
-        storageInfoLines.forEach((line) => {
+        try {
+            const storageInfo = await this._systemLink.getStorageInfo();
+            const storageInfoLines = storageInfo.split('\n');
+            storageInfoLines.forEach((line) => {
+                const label = new St.Label({
+                    text: line,
+                    style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+                    x_expand: true
+                });
+                this._storageBox.add_child(label);
+            });
+        } catch (error) {
+            console.error('Error getting storage info:', error);
             const label = new St.Label({
-                text: line,
+                text: 'Error: Failed to load storage info',
                 style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
                 x_expand: true
             });
             this._storageBox.add_child(label);
-        });
+        }
         column.add_child(this._storageHead);
         column.add_child(storage_scrollView);
     }
@@ -624,32 +644,60 @@ export class UIManager {
             text: 'Power',
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
-        this._powerShow = new St.Label({
-            text: await this._systemInfoCollector.getPowerInfo(),
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
-        });
+        try {
+            const powerInfo = await this._systemLink.getPowerInfo();
+            this._powerShow = new St.Label({
+                text: powerInfo || 'No battery found',
+                style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+            });
+        } catch (error) {
+            console.error('Error getting power info:', error);
+            this._powerShow = new St.Label({
+                text: 'Error: Failed to load',
+                style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+            });
+        }
         column.add_child(this._powerHead);
         column.add_child(this._powerShow);
     }
 
     async _createOSSection(column) {
         const themeColors = this._updateThemeColors();
-        const { osName, osType, kernelVersion } = await this._systemInfoCollector.getSystemInfo();
+        try {
+            const systemInfo = await this._systemLink.getSystemInfo();
+            const { osName, osType, kernelVersion } = systemInfo || { osName: 'Unknown', osType: 'Unknown', kernelVersion: 'Unknown' };
 
-        this._device_OS = new St.Label({
-            text: `OS : ${osName} [${osType}]`,
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 18px;`,
-            x_align: Clutter.ActorAlign.START,
-        });
+            this._device_OS = new St.Label({
+                text: `OS : ${osName} [${osType}]`,
+                style: `color: ${themeColors.text}; font-weight: bold; font-size: 18px;`,
+                x_align: Clutter.ActorAlign.START,
+            });
 
-        this._device_Kernel = new St.Label({
-            text: `Kernel : Linux ${kernelVersion}`,
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
-            x_align: Clutter.ActorAlign.START,
-        });
-        
-        column.add_child(this._device_OS);
-        column.add_child(this._device_Kernel);
+            this._device_Kernel = new St.Label({
+                text: `Kernel : Linux ${kernelVersion}`,
+                style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
+                x_align: Clutter.ActorAlign.START,
+            });
+            
+            column.add_child(this._device_OS);
+            column.add_child(this._device_Kernel);
+        } catch (error) {
+            console.error('Error getting system info:', error);
+            this._device_OS = new St.Label({
+                text: 'OS : Unknown',
+                style: `color: ${themeColors.text}; font-weight: bold; font-size: 18px;`,
+                x_align: Clutter.ActorAlign.START,
+            });
+
+            this._device_Kernel = new St.Label({
+                text: 'Kernel : Unknown',
+                style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
+                x_align: Clutter.ActorAlign.START,
+            });
+            
+            column.add_child(this._device_OS);
+            column.add_child(this._device_Kernel);
+        }
     }
 
     async _createCPUSection(column) {
@@ -663,39 +711,72 @@ export class UIManager {
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
         });
         // Get CPU info asynchronously
-        const cpuInfo = await this._systemInfoCollector.getCPUInfo();
-        if (!cpuInfo || !cpuInfo.coreSpeeds) {
-            console.error('Failed to get CPU info');
-            return;
-        }
-        this._cpuName.text = `${cpuInfo.cpu} x ${cpuInfo.core}`;
-        this._coreBox = new St.BoxLayout({
-            vertical: true,
-            x_expand: true,
-            y_expand: true
-        });
-        const cpu_scrollView = new St.ScrollView({
-            style_class: 'custom-scroll',
-            overlay_scrollbars: true,
-            enable_mouse_scrolling: true,
-            x_expand: true,
-            y_expand: true
-        });
-        cpu_scrollView.set_child(this._coreBox);
-        cpuInfo.coreSpeeds.forEach((line) => {
-            const label = new St.Label({
-                text: line,
+        try {
+            const cpuInfo = await this._systemLink.getCPUInfo();
+            if (!cpuInfo || !cpuInfo.coreSpeeds) {
+                console.error('Failed to get CPU info');
+                this._cpuName.text = 'CPU: Unknown';
+                return;
+            }
+            this._cpuName.text = `${cpuInfo.cpu} x ${cpuInfo.core}`;
+            this._coreBox = new St.BoxLayout({
+                vertical: true,
+                x_expand: true,
+                y_expand: true
+            });
+            const cpu_scrollView = new St.ScrollView({
+                style_class: './assets/custom-scroll',
+                overlay_scrollbars: true,
+                enable_mouse_scrolling: true,
+                x_expand: true,
+                y_expand: true
+            });
+            cpu_scrollView.set_child(this._coreBox);
+            cpuInfo.coreSpeeds.forEach((line) => {
+                const label = new St.Label({
+                    text: line,
+                    style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+                    x_expand: true
+                });
+                this._coreBox.add_child(label);
+            });
+            // Use a vertical box for header and CPU name
+            const cpuHeadBox = new St.BoxLayout({ vertical: true });
+            cpuHeadBox.add_child(this._cpuHead);
+            cpuHeadBox.add_child(this._cpuName);
+            column.add_child(cpuHeadBox);
+            column.add_child(cpu_scrollView);
+        } catch (error) {
+            console.error('Error getting CPU info:', error);
+            this._cpuName.text = 'CPU: Error loading';
+            this._coreBox = new St.BoxLayout({
+                vertical: true,
+                x_expand: true,
+                y_expand: true
+            });
+            const cpu_scrollView = new St.ScrollView({
+                style_class: './assets/custom-scroll',
+                overlay_scrollbars: true,
+                enable_mouse_scrolling: true,
+                x_expand: true,
+                y_expand: true
+            });
+            cpu_scrollView.set_child(this._coreBox);
+            
+            const errorLabel = new St.Label({
+                text: 'Error: Failed to load CPU info',
                 style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
                 x_expand: true
             });
-            this._coreBox.add_child(label);
-        });
-        // Use a vertical box for header and CPU name
-        const cpuHeadBox = new St.BoxLayout({ vertical: true });
-        cpuHeadBox.add_child(this._cpuHead);
-        cpuHeadBox.add_child(this._cpuName);
-        column.add_child(cpuHeadBox);
-        column.add_child(cpu_scrollView);
+            this._coreBox.add_child(errorLabel);
+            
+            // Use a vertical box for header and CPU name
+            const cpuHeadBox = new St.BoxLayout({ vertical: true });
+            cpuHeadBox.add_child(this._cpuHead);
+            cpuHeadBox.add_child(this._cpuName);
+            column.add_child(cpuHeadBox);
+            column.add_child(cpu_scrollView);
+        }
     }
 
     async _createGPUSection(column) {
@@ -711,7 +792,7 @@ export class UIManager {
             style: `padding: 5px;`
         });
         const gpu_scrollView = new St.ScrollView({
-            style_class: 'custom-scroll',
+            style_class: './assets/custom-scroll',
             overlay_scrollbars: true,
             enable_mouse_scrolling: true,
             x_expand: true,
@@ -729,7 +810,7 @@ export class UIManager {
             const themeColors = this._updateThemeColors();
             if (this._gpuHead)
                 this._gpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
-            const gpuInfo = await this._systemInfoCollector.getGPUInfo();
+            const gpuInfo = await this._systemLink.getGPUInfo();
             if (gpuInfo) {
                 const lines = gpuInfo.split('\n').filter(line => line.trim() !== '');
                 const children = this._gpuBox.get_children();
@@ -759,39 +840,51 @@ export class UIManager {
 
     async _updateDeviceInfo() {
         if (this._deviceWithUptime) {
-            this._deviceWithUptime.text = await this._systemInfoCollector.getUptime();
+            this._deviceWithUptime.text = await this._systemLink.getUptime();
         }
     }
 
     async _updateNetworkInfo() {
         if (this._wifiSpeedLabel) {
-            const { download, upload } = await this._systemInfoCollector.getNetworkSpeed();
-            const ssid = await this._systemInfoCollector.getWifiSSID();
+            const networkInfo = await this._systemLink.getNetworkInfo();
+            const { download, upload } = networkInfo.networkSpeed || { download: '0', upload: '0' };
+            const ssid = networkInfo.wifiSSID || 'Unknown';
             this._wifiSpeedLabel.text = `${ssid} ↓ ${download} ↑ ${upload}`;
         }
 
         if (this._publicIPLabel) {
-            this._publicIPLabel.text = await this._systemInfoCollector.getPublicIP();
+            const networkInfo = await this._systemLink.getNetworkInfo();
+            this._publicIPLabel.text = networkInfo.publicIP || 'Unknown';
         }
         if (this._localIPLabel) {
-            this._localIPLabel.text = await this._systemInfoCollector.getLocalIP();
+            const networkInfo = await this._systemLink.getNetworkInfo();
+            this._localIPLabel.text = networkInfo.lanIP || 'Unknown';
         }
     }
 
     async _updateMemoryInfo() {
         if (this._memoryUse && this._memoryCache) {
-            const memoryInfo = await this._systemInfoCollector.getMemoryInfo();
-            if (!memoryInfo.error) {
-                const { use, max, percent, cache, loadEmoji } = memoryInfo;
-                this._memoryUse.text = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
-                this._memoryCache.text = `Cache ${cache}`;
+            try {
+                const memoryInfo = await this._systemLink.getMemoryInfo();
+                if (memoryInfo && !memoryInfo.error) {
+                    const { use, max, percent, cache, loadEmoji } = memoryInfo;
+                    this._memoryUse.text = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
+                    this._memoryCache.text = `Cache ${cache}`;
+                } else {
+                    this._memoryUse.text = 'Error: No data';
+                    this._memoryCache.text = '';
+                }
+            } catch (error) {
+                console.error('Error updating memory info:', error);
+                this._memoryUse.text = 'Error: Failed to update';
+                this._memoryCache.text = '';
             }
         }
     }
 
     async _updateStorageInfo() {
         if (this._storageBox) {
-            const storageInfo = await this._systemInfoCollector.getStorageInfo();
+            const storageInfo = await this._systemLink.getStorageInfo();
             const storageInfoLines = storageInfo.split('\n');
             const children = this._storageBox.get_children();
             
@@ -820,13 +913,19 @@ export class UIManager {
 
     async _updatePowerInfo() {
         if (this._powerShow) {
-            this._powerShow.text = await this._systemInfoCollector.getPowerInfo();
+            try {
+                const powerInfo = await this._systemLink.getPowerInfo();
+                this._powerShow.text = powerInfo || 'No battery found';
+            } catch (error) {
+                console.error('Error updating power info:', error);
+                this._powerShow.text = 'Error: Failed to update';
+            }
         }
     }
 
     async _updateCPUInfo() {
         if (this._coreBox) {
-            const cpuInfo = await this._systemInfoCollector.getCPUInfo();
+            const cpuInfo = await this._systemLink.getCPUInfo();
             if (cpuInfo && cpuInfo.coreSpeeds) {
                 const children = this._coreBox.get_children();
                 const existingCount = children.length;

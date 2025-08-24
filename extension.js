@@ -1,18 +1,18 @@
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
-import { SystemInfoCollector } from './systemInfoCollector.js';
+import { SystemLink } from './systemLink.js';
 import { UIManager } from './uiManager.js';
 
 
 export default class SystemHUD extends Extension {
     constructor(metadata) {
         super(metadata);
-        this._systemInfoCollector = null;
+        this._systemLink = null;
         this._uiManager = null;
     }
 
     enable() {
-        this._systemInfoCollector = new SystemInfoCollector();
-        this._uiManager = new UIManager(this, this._systemInfoCollector);
+        this._systemLink = new SystemLink();
+        this._uiManager = new UIManager(this, this._systemLink);
         this._uiManager.createIndicator();
     }
 
@@ -21,6 +21,6 @@ export default class SystemHUD extends Extension {
             this._uiManager.destroy();
             this._uiManager = null;
         }
-        this._systemInfoCollector = null;
+        this._systemLink = null;
     }
 } 
