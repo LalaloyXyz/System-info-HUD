@@ -4,6 +4,16 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import { ThemeManager, updateCPUSectionStyle, updateNetworkSectionStyle, updateMemorySectionStyle, updateStorageSectionStyle, updatePowerSectionStyle, updateOSSectionStyle, updateDeviceSectionStyle, updateGPUSectionStyle } from './modules/themeManager.js';
+import {
+  updateCPUData,
+  updateMemoryData,
+  updateNetworkData,
+  updateStorageData,
+  updatePowerData,
+  updateDeviceData,
+  updateGPUData
+} from './updateData.js';
 
 export class UIManager {
     constructor(extension, systemLink) {
@@ -11,11 +21,10 @@ export class UIManager {
         this._systemLink = systemLink;
         this._main_screen = null;
         this._updateTimeoutId = null;
-        this._themeSettings = new Gio.Settings({
-            schema_id: 'org.gnome.desktop.interface'
-        });
-        this._themeChangeSignal = this._themeSettings.connect('changed::gtk-theme', 
-        this._onThemeChanged.bind(this));
+        this._themeManager = new ThemeManager();
+        this._themeChangeSignal = this._themeManager.connectThemeChanged(
+            this._onThemeChanged.bind(this)
+        );
         this._useAnimation = true; // Default: use animation
         this._labelTimeoutIds = []; // Track label animation timeouts
     }
@@ -93,21 +102,7 @@ export class UIManager {
     }
 
     _updateThemeColors() {
-        const colorScheme = this._themeSettings.get_string('color-scheme');
-        const isDarkTheme = colorScheme === 'prefer-dark';
-
-        const backgroundColor = isDarkTheme ? '#212121' : '#f5f5f5';
-        const textColor = isDarkTheme ? 'white' : 'black';
-        const secondaryTextColor = isDarkTheme ? 'rgb(180, 180, 180)' : 'rgb(45, 45, 45)';
-        const accentColor = isDarkTheme ? 'black' : 'white';
-
-        return {
-            background: backgroundColor,
-            text: textColor,
-            secondaryText: secondaryTextColor,
-            accent: accentColor,
-            isDark: isDarkTheme
-        };
+        return this._themeManager.getThemeColors();
     }
 
     _onThemeChanged() {
@@ -139,93 +134,46 @@ export class UIManager {
                     font-weight: bold;`;
             }
 
-            this._updateDeviceSectionStyle();
-            this._updateNetworkSectionStyle();
-            this._updateMemorySectionStyle();
-            this._updateStorageSectionStyle();
-            this._updatePowerSectionStyle();
-            this._updateOSSectionStyle();
-            this._updateCPUSectionStyle();
+            updateDeviceSectionStyle({
+                deviceWithUptime: this._deviceWithUptime,
+                deviceLabel: this._deviceLabel
+            }, themeColors);
+            updateNetworkSectionStyle({
+                wifiSpeedLabel: this._wifiSpeedLabel,
+                wifiLabel: this._wifiLabel,
+                publicIPLabel: this._publicIPLabel,
+                publicIPDescLabel: this._publicIPDescLabel,
+                localIPLabel: this._localIPLabel,
+                localIPDescLabel: this._localIPDescLabel
+            }, themeColors);
+            updateMemorySectionStyle({
+                memoryUse: this._memoryUse,
+                memoryCache: this._memoryCache,
+                memoryHead: this._memoryHead
+            }, themeColors);
+            updateStorageSectionStyle({
+                storageBox: this._storageBox,
+                storageHead: this._storageHead
+            }, themeColors);
+            updatePowerSectionStyle({
+                powerShow: this._powerShow,
+                powerHead: this._powerHead
+            }, themeColors);
+            updateOSSectionStyle({
+                device_OS: this._device_OS,
+                device_Kernel: this._device_Kernel
+            }, themeColors);
+            updateCPUSectionStyle({
+                cpuHead: this._cpuHead,
+                cpuName: this._cpuName,
+                coreBox: this._coreBox
+            }, themeColors, St);
+            updateGPUSectionStyle({
+                gpuHead: this._gpuHead,
+                gpuBox: this._gpuBox
+            }, themeColors, St);
             this._updateGPUInfo();
         }
-    }
-
-    _updateNetworkSectionStyle() {
-        const themeColors = this._updateThemeColors();
-        if (this._wifiSpeedLabel)
-            this._wifiSpeedLabel.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 13px;`);
-        if (this._wifiLabel)
-            this._wifiLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
-        if (this._publicIPLabel)
-            this._publicIPLabel.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 12px;`);
-        if (this._publicIPDescLabel)
-            this._publicIPDescLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 12px;`);
-        if (this._localIPLabel)
-            this._localIPLabel.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 12px;`);
-        if (this._localIPDescLabel)
-            this._localIPDescLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 12px;`);
-    }
-
-    _updateMemorySectionStyle() {
-        const themeColors = this._updateThemeColors();
-        if (this._memoryUse && this._memoryCache) {
-            this._memoryUse.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 12px;`);
-            this._memoryCache.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 12px;`);
-        }
-        if (this._memoryHead)
-            this._memoryHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
-    }
-
-    _updateStorageSectionStyle() {
-        const themeColors = this._updateThemeColors();
-        if (this._storageBox) {
-            const children = this._storageBox.get_children();
-            for (let i = 0; i < children.length; i++) {
-                children[i].set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 11px;`);
-            }
-        }
-        if (this._storageHead)
-            this._storageHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
-    }
-
-    _updatePowerSectionStyle() {
-        const themeColors = this._updateThemeColors();
-        if (this._powerShow)
-            this._powerShow.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 12px;`);
-        if (this._powerHead)
-            this._powerHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
-    }
-
-    _updateOSSectionStyle() {
-        const themeColors = this._updateThemeColors();
-        if (this._device_OS)
-            this._device_OS.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 18px;`);
-        if (this._device_Kernel)
-            this._device_Kernel.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 16px;`);
-    }
-
-    _updateCPUSectionStyle() {
-        const themeColors = this._updateThemeColors();
-        if (this._cpuHead)
-            this._cpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
-        if (this._cpuName)
-            this._cpuName.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 14px;`);
-        if (this._coreBox) {
-            const children = this._coreBox.get_children();
-            for (let i = 0; i < children.length; i++) {
-                if (children[i] instanceof St.Label) {
-                    children[i].set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 11px;`);
-                }
-            }
-        }
-    }
-
-    _updateDeviceSectionStyle() {
-        const themeColors = this._updateThemeColors();
-        if (this._deviceWithUptime)
-            this._deviceWithUptime.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 16px;`);
-        if (this._deviceLabel)
-            this._deviceLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 14px;`);
     }
 
     _createColumn(width, height = null) {
@@ -808,76 +756,41 @@ export class UIManager {
     async _updateGPUInfo() {
         if (this._gpuBox) {
             const themeColors = this._updateThemeColors();
-            if (this._gpuHead)
-                this._gpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
             const gpuInfo = await this._systemLink.getGPUInfo();
-            if (gpuInfo) {
-                const lines = gpuInfo.split('\n').filter(line => line.trim() !== '');
-                const children = this._gpuBox.get_children();
-                const existingCount = children.length;
-                const newCount = lines.length;
-                // Update existing labels
-                for (let i = 0; i < Math.min(existingCount, newCount); i++) {
-                    if (children[i].text !== lines[i]) {
-                        children[i].text = lines[i];
-                    }
-                    children[i].set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 11px;`);
-                }
-                // Add new labels if needed
-                if (existingCount < newCount) {
-                    for (let i = existingCount; i < newCount; i++) {
-                        const label = new St.Label({
-                            text: lines[i],
-                            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
-                            x_expand: true
-                        });
-                        this._gpuBox.add_child(label);
-                    }
-                }
-            }
+            updateGPUData({ gpuBox: this._gpuBox, gpuHead: this._gpuHead }, gpuInfo, themeColors, St);
         }
     }
 
     async _updateDeviceInfo() {
         if (this._deviceWithUptime) {
-            this._deviceWithUptime.text = await this._systemLink.getUptime();
+            const uptime = await this._systemLink.getUptime();
+            updateDeviceData({ deviceWithUptime: this._deviceWithUptime }, uptime);
         }
     }
 
     async _updateNetworkInfo() {
-        if (this._wifiSpeedLabel) {
-            const networkInfo = await this._systemLink.getNetworkInfo();
-            const { download, upload } = networkInfo.networkSpeed || { download: '0', upload: '0' };
-            const ssid = networkInfo.wifiSSID || 'Unknown';
-            this._wifiSpeedLabel.text = `${ssid} ↓ ${download} ↑ ${upload}`;
-        }
-
-        if (this._publicIPLabel) {
-            const networkInfo = await this._systemLink.getNetworkInfo();
-            this._publicIPLabel.text = networkInfo.publicIP || 'Unknown';
-        }
-        if (this._localIPLabel) {
-            const networkInfo = await this._systemLink.getNetworkInfo();
-            this._localIPLabel.text = networkInfo.lanIP || 'Unknown';
-        }
+        const networkInfo = await this._systemLink.getNetworkInfo();
+        updateNetworkData({
+            wifiSpeedLabel: this._wifiSpeedLabel,
+            publicIPLabel: this._publicIPLabel,
+            localIPLabel: this._localIPLabel
+        }, networkInfo);
     }
 
     async _updateMemoryInfo() {
         if (this._memoryUse && this._memoryCache) {
             try {
                 const memoryInfo = await this._systemLink.getMemoryInfo();
-                if (memoryInfo && !memoryInfo.error) {
-                    const { use, max, percent, cache, loadEmoji } = memoryInfo;
-                    this._memoryUse.text = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
-                    this._memoryCache.text = `Cache ${cache}`;
-                } else {
-                    this._memoryUse.text = 'Error: No data';
-                    this._memoryCache.text = '';
-                }
+                updateMemoryData({
+                    memoryUse: this._memoryUse,
+                    memoryCache: this._memoryCache
+                }, memoryInfo);
             } catch (error) {
                 console.error('Error updating memory info:', error);
-                this._memoryUse.text = 'Error: Failed to update';
-                this._memoryCache.text = '';
+                updateMemoryData({
+                    memoryUse: this._memoryUse,
+                    memoryCache: this._memoryCache
+                }, null);
             }
         }
     }
@@ -885,29 +798,7 @@ export class UIManager {
     async _updateStorageInfo() {
         if (this._storageBox) {
             const storageInfo = await this._systemLink.getStorageInfo();
-            const storageInfoLines = storageInfo.split('\n');
-            const children = this._storageBox.get_children();
-            
-            for (let i = 0; i < Math.min(children.length, storageInfoLines.length); i++) {
-                if (children[i].text !== storageInfoLines[i]) {
-                    children[i].text = storageInfoLines[i];
-                }
-            }
-
-            if (children.length < storageInfoLines.length) {
-                for (let i = children.length; i < storageInfoLines.length; i++) {
-                    const label = new St.Label({
-                        text: storageInfoLines[i],
-                        style: 'font-weight: bold; font-size: 11px;',
-                        x_expand: true
-                    });
-                    this._storageBox.add_child(label);
-                }
-            } else if (children.length > storageInfoLines.length) {
-                for (let i = storageInfoLines.length; i < children.length; i++) {
-                    children[i].hide();
-                }
-            }
+            updateStorageData({ storageBox: this._storageBox }, storageInfo, St);
         }
     }
 
@@ -915,10 +806,10 @@ export class UIManager {
         if (this._powerShow) {
             try {
                 const powerInfo = await this._systemLink.getPowerInfo();
-                this._powerShow.text = powerInfo || 'No battery found';
+                updatePowerData({ powerShow: this._powerShow }, powerInfo);
             } catch (error) {
                 console.error('Error updating power info:', error);
-                this._powerShow.text = 'Error: Failed to update';
+                updatePowerData({ powerShow: this._powerShow }, null);
             }
         }
     }
@@ -926,34 +817,7 @@ export class UIManager {
     async _updateCPUInfo() {
         if (this._coreBox) {
             const cpuInfo = await this._systemLink.getCPUInfo();
-            if (cpuInfo && cpuInfo.coreSpeeds) {
-                const children = this._coreBox.get_children();
-                const existingCount = children.length;
-                const newCount = cpuInfo.coreSpeeds.length;
-                
-                for (let i = 0; i < Math.min(existingCount, newCount); i++) {
-                    if (children[i].text !== cpuInfo.coreSpeeds[i]) {
-                        children[i].text = cpuInfo.coreSpeeds[i];
-                    }
-                }
-                
-                if (existingCount < newCount) {
-                    const fragment = new St.BoxLayout({ vertical: true });
-                    for (let i = existingCount; i < newCount; i++) {
-                        const label = new St.Label({
-                            text: cpuInfo.coreSpeeds[i],
-                            style: `font-weight: bold; font-size: 11px;`,
-                            x_expand: true
-                        });
-                        fragment.add_child(label);
-                    }
-                    this._coreBox.add_child(fragment);
-                } else if (existingCount > newCount) {
-                    for (let i = newCount; i < existingCount; i++) {
-                        children[i].hide();
-                    }
-                }
-            }
+            updateCPUData({ cpuName: this._cpuName, coreBox: this._coreBox }, cpuInfo, St);
         }
     }
 
@@ -1002,12 +866,9 @@ export class UIManager {
     destroy() {
         this.destroyMainScreen();
         
-        if (this._themeSettings) {
-            if (this._themeChangeSignal) {
-                this._themeSettings.disconnect(this._themeChangeSignal);
-                this._themeChangeSignal = null;
-            }
-            this._themeSettings = null;
+        if (this._themeManager) {
+            this._themeManager.disconnectThemeChanged(this._themeChangeSignal);
+            this._themeManager = null;
         }
         
         if (this._indicator) {
