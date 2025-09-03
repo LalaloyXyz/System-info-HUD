@@ -39,7 +39,28 @@ export class SystemModule extends BaseModule {
             console.error('Failed to get kernel version:', e);
         }
 
-        const result = { osName, osType, kernelVersion };
+        // GNOME Shell version
+        let gnomeVersion = 'Unknown GNOME';
+        try {
+            const gnomeOut = await this._executeCommand(['gnome-shell', '--version']);
+            // Expected: "GNOME Shell 45.4"
+            const match = gnomeOut.match(/GNOME Shell\s+([\w\.-]+)/i);
+            if (match && match[1]) {
+                gnomeVersion = match[1];
+            } else {
+                // Fallback: try reading env or leave as unknown
+                const envVersion = GLib.getenv('GNOME_SHELL_VERSION');
+                if (envVersion) gnomeVersion = envVersion;
+            }
+        } catch (e) {
+            console.error('Failed to get GNOME version:', e);
+        }
+
+        // Session type (Wayland/X11)
+        let sessionType = GLib.getenv('XDG_SESSION_TYPE') || 'Unknown';
+        if (sessionType) sessionType = sessionType.charAt(0).toUpperCase() + sessionType.slice(1);
+
+        const result = { osName, osType, kernelVersion, gnomeVersion, sessionType };
         this._updateCache(result);
         return result;
     }

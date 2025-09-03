@@ -259,6 +259,7 @@ export class UIManager {
         this._enableDrag(this._main_screen);
 
         // Create and populate UI components
+
         await this._createLeftColumn(leftColumn, popupHeight);
         await this._createRightColumn(rightColumn, popupHeight);
         this._createBackColumn(backColumn, popupHeight);
@@ -372,6 +373,13 @@ export class UIManager {
         column.add_child(topEndColumn);
 
         const themeColors = this._updateThemeColors();
+        const buttonsRow = new St.BoxLayout({
+            vertical: false,
+            x_align: Clutter.ActorAlign.END,
+            x_expand: true,
+            style: 'spacing: 6px;'
+        });
+
         this._closeButton = new St.Button({
             style: `background-color: #f44336;
                     color: white;
@@ -388,7 +396,9 @@ export class UIManager {
             this.destroyMainScreen();
         });
 
-        topEndColumn.add_child(this._closeButton);
+        // copy button moved to front column top area
+        buttonsRow.add_child(this._closeButton);
+        topEndColumn.add_child(buttonsRow);
     }
 
     async _createDeviceSection(column) {
@@ -613,7 +623,7 @@ export class UIManager {
         const themeColors = this._updateThemeColors();
         try {
             const systemInfo = await this._systemLink.getSystemInfo();
-            const { osName, osType, kernelVersion } = systemInfo || { osName: 'Unknown', osType: 'Unknown', kernelVersion: 'Unknown' };
+            const { osName, osType, kernelVersion, gnomeVersion, sessionType } = systemInfo || { osName: 'Unknown', osType: 'Unknown', kernelVersion: 'Unknown', gnomeVersion: 'Unknown', sessionType: 'Unknown' };
 
             this._device_OS = new St.Label({
                 text: `OS : ${osName} [${osType}]`,
@@ -629,6 +639,35 @@ export class UIManager {
             
             column.add_child(this._device_OS);
             column.add_child(this._device_Kernel);
+
+            // On cursor hover/touch show GNOME+Session on kernel line; otherwise show Kernel version
+            let revertTimeoutId = null;
+            const setPrimary = () => {
+                this._device_OS.text = `OS : ${osName} [${osType}]`;
+                this._device_Kernel.text = `Kernel : Linux ${kernelVersion}`;
+            };
+            const setAlternateHover = () => {
+                this._device_Kernel.text = `GNOME : ${gnomeVersion} | Session : ${sessionType}`;
+            };
+            const setAlternateTouch = () => {
+                // Do not show device serial; only update kernel line
+                this._device_Kernel.text = `GNOME : ${gnomeVersion} | Session : ${sessionType}`;
+            };
+            const connectHover = (actor) => {
+                actor.reactive = true;
+                actor.can_focus = true;
+                actor.track_hover = true;
+                actor.connect('enter-event', () => { setAlternateHover(); return Clutter.EVENT_PROPAGATE; });
+                actor.connect('leave-event', () => { setPrimary(); return Clutter.EVENT_PROPAGATE; });
+                actor.connect('touch-event', () => {
+                    setAlternateTouch();
+                    if (revertTimeoutId) { GLib.source_remove(revertTimeoutId); revertTimeoutId = null; }
+                    revertTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => { setPrimary(); revertTimeoutId = null; return GLib.SOURCE_REMOVE; });
+                    return Clutter.EVENT_STOP;
+                });
+            };
+            connectHover(this._device_OS);
+            connectHover(this._device_Kernel);
         } catch (error) {
             console.error('Error getting system info:', error);
             this._device_OS = new St.Label({
@@ -833,6 +872,8 @@ export class UIManager {
             this._updateGPUInfo()
         ]);
     }
+
+
 
     destroyMainScreen() {
         if (this._main_screen) {

@@ -115,7 +115,7 @@ export function updateGPUData({ gpuBox, gpuHead }, gpuInfo, themeColors, St) {
                 }
                 children[i].set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 11px;`);
             }
-            // Add new labels if needed
+
             if (existingCount < newCount) {
                 for (let i = existingCount; i < newCount; i++) {
                     const label = new St.Label({
