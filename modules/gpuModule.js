@@ -184,7 +184,7 @@ export class GPUModule extends BaseModule {
         try {
             const igttPath = await this._executeCommand(['which', 'intel_gpu_top']);
             if (!igttPath.trim()) return null;
-            const output = await this._executeCommand(['intel_gpu_top', '-J', '-s', '1000', '-o', '-']);
+            const output = await this._executeCommand(['intel_gpu_top', '-J', '-s', '1000']);
             const lines = output.trim().split('\n').filter(Boolean);
             let stats = null;
             for (let i = lines.length - 1; i >= 0; i--) {
