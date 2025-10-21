@@ -5,6 +5,9 @@ export class ThemeManager {
         this._themeSettings = new Gio.Settings({
             schema_id: 'org.gnome.desktop.interface'
         });
+        this._themeChangedHandlers = [];
+        // ID returned by Gio.Settings.connect for the color-scheme change
+        this._settingsSignalId = null;
     }
 
     getThemeColors() {
@@ -19,8 +22,56 @@ export class ThemeManager {
         };
     }
 
-    connectThemeChanged(callback) {
-        return this._themeSettings.connect('changed::gtk-theme', callback);
+    connectThemeChanged(handler) {
+        const handlerId = this._themeChangedHandlers.length;
+        this._themeChangedHandlers.push(handler);
+
+        // If this is the first handler, connect to Gio.Settings change signal
+        if (this._settingsSignalId === null) {
+            this._settingsSignalId = this._themeSettings.connect('changed::color-scheme', () => {
+                this.emitThemeChanged();
+            });
+        }
+
+        // Call the handler immediately so UI can apply current theme right away
+        try {
+            handler();
+        } catch (e) {
+            // swallow handler errors to avoid breaking connect
+            logError(e);
+        }
+
+        return handlerId;
+    }
+
+    disconnectThemeChanged(handlerId) {
+        if (handlerId >= 0 && handlerId < this._themeChangedHandlers.length) {
+            this._themeChangedHandlers[handlerId] = null;
+        }
+
+        // If no handlers left, disconnect the Gio.Settings signal
+        const anyRemaining = this._themeChangedHandlers.some(h => !!h);
+        if (!anyRemaining && this._settingsSignalId !== null) {
+            try {
+                this._themeSettings.disconnect(this._settingsSignalId);
+            } catch (e) {
+                // ignore disconnect errors
+            }
+            this._settingsSignalId = null;
+        }
+    }
+
+    emitThemeChanged() {
+        for (const handler of this._themeChangedHandlers) {
+            if (handler) {
+                try {
+                    handler();
+                } catch (e) {
+                    // keep other handlers running even if one fails
+                    logError(e);
+                }
+            }
+        }
     }
 }
 

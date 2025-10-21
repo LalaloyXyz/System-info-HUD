@@ -4,16 +4,46 @@ export class CPUModule extends BaseModule {
     constructor() {
         super(1000); // 1 second cache TTL
         this._networkInterface = { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 };
+        // cache results of which/executable checks to avoid repeating them
+        this._execCache = {};
     }
 
+    // cache-check helper for executables
+    async _hasExecutable(bin) {
+        if (this._execCache[bin] !== undefined) return this._execCache[bin];
+        try {
+            const out = await this._executeCommand(['which', bin]);
+            const exists = !!(out && out.trim());
+            this._execCache[bin] = exists;
+            return exists;
+        } catch (e) {
+            this._execCache[bin] = false;
+            return false;
+        }
+    }
+    
     async getCPUInfo() {
         if (this._isCacheValid()) {
             return this._cache.data;
         }
 
         try {
-            // Get CPU info using lscpu
-            const lscpuText = await this._executeCommand(['lscpu']);
+            // Get CPU info using lscpu if available, else fallback to /proc/cpuinfo
+            let lscpuText = '';
+            const hasLscpu = await this._hasExecutable('lscpu');
+            if (hasLscpu) {
+                try {
+                    lscpuText = await this._executeCommand(['lscpu']);
+                } catch (e) {
+                    lscpuText = '';
+                }
+            } else {
+                try {
+                    lscpuText = await this._readFile('/proc/cpuinfo');
+                } catch (e) {
+                    lscpuText = '';
+                }
+            }
             
             let modelName = "Unknown CPU";
             const modelNamePatterns = [
@@ -124,7 +154,17 @@ export class CPUModule extends BaseModule {
             }
 
             // Get temperature data
-            const sensorText = await this._executeCommand(['sensors']);
+            // Only run sensors if available (use exec cache)
+            let sensorText = '';
+            const hasSensors = await this._hasExecutable('sensors');
+            if (hasSensors) {
+                try {
+                    sensorText = await this._executeCommand(['sensors']);
+                } catch (e) {
+                    sensorText = '';
+                }
+            }
+
             const coreTemps = {};
             
             // Universal temperature patterns that work for both Intel and AMD
@@ -141,7 +181,7 @@ export class CPUModule extends BaseModule {
                 /^CPU\s+Tctl\/Tdie:\s+\+([\d.]+)°C/mg,       // Alternative AMD temp
                 // Intel specific patterns
                 /^Package\s+id\s+0:\s+\+([\d.]+)°C/mg,       // Intel package temp
-                /^Core\s+\d+\s+\(PECI\s+\d+\):\s+\+([\d.]+)°C/mg,  // Intel PECI
+                /^Core\s+\d+\s+\(PECI\s+\d+\):\s+\+([\dn.]+)°C/mg,  // Intel PECI (tolerant)
                 /^CPU\s+Package:\s+\+([\d.]+)°C/mg           // Intel package temp
             ];
             
@@ -224,4 +264,4 @@ export class CPUModule extends BaseModule {
     getInfo() {
         return this.getCPUInfo();
     }
-} 
+}

@@ -2,9 +2,9 @@
   "uuid": "systemHUD@LalaloyXyz",
   "name": "System HUD",
   "description": "Clean UI system monitor for CPU, GPU, memory, and storage._.",
-  "version": 1,
+  "version": 16.1,
   "shell-version": [
-    "45", "46", "47", "48"
+    "45", "46", "47", "48", "49"
   ],
   "url": "https://github.com/LalaloyXyz/System-info-HUD",
   "dependencies": [

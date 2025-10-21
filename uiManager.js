@@ -1,18 +1,27 @@
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
-import Gio from 'gi://Gio';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
-import { ThemeManager, updateCPUSectionStyle, updateNetworkSectionStyle, updateMemorySectionStyle, updateStorageSectionStyle, updatePowerSectionStyle, updateOSSectionStyle, updateDeviceSectionStyle, updateGPUSectionStyle } from './modules/themeManager.js';
+import { 
+    ThemeManager, 
+    updateCPUSectionStyle, 
+    updateNetworkSectionStyle, 
+    updateMemorySectionStyle, 
+    updateStorageSectionStyle, 
+    updatePowerSectionStyle, 
+    updateOSSectionStyle, 
+    updateDeviceSectionStyle, 
+    updateGPUSectionStyle 
+} from './themeManager.js';
 import {
-  updateCPUData,
-  updateMemoryData,
-  updateNetworkData,
-  updateStorageData,
-  updatePowerData,
-  updateDeviceData,
-  updateGPUData
+    updateCPUData,
+    updateMemoryData,
+    updateNetworkData,
+    updateStorageData,
+    updatePowerData,
+    updateDeviceData,
+    updateGPUData
 } from './updateData.js';
 
 export class UIManager {
@@ -27,6 +36,7 @@ export class UIManager {
         );
         this._useAnimation = true; // Default: use animation
         this._labelTimeoutIds = []; // Track label animation timeouts
+        this._updateInProgress = false; // prevent overlapping updates
     }
 
     createIndicator() {
@@ -258,18 +268,13 @@ export class UIManager {
         // Enable dragging
         this._enableDrag(this._main_screen);
 
-        // Create and populate UI components
-
-        await this._createLeftColumn(leftColumn, popupHeight);
-        await this._createRightColumn(rightColumn, popupHeight);
-        this._createBackColumn(backColumn, popupHeight);
-
-        // Set size
+        // Set size and immediately add to layout so animation can play without waiting for data
         this._main_screen.set_size(popupWidth, popupHeight);
         Main.layoutManager.addChrome(this._main_screen, {
             trackFullscreen: true,
         });
 
+        // Compute position and play animation immediately
         const [_, natWidth] = this._main_screen.get_preferred_width(-1);
         const [__, natHeight] = this._main_screen.get_preferred_height(-1);
         const x = Math.floor((monitor.width - natWidth) / 2) + monitor.x;
@@ -288,12 +293,23 @@ export class UIManager {
             this._main_screen.opacity = 255;
         }
 
+        // Populate UI components asynchronously so they don't block the entrance animation
+        this._createBackColumn(backColumn, popupHeight); // synchronous
+        // Start population in background (parallel, not blocking entrance animation)
+        this._createLeftColumn(leftColumn, popupHeight).catch((e) => { try { log(e); } catch(_){} });
+        this._createRightColumn(rightColumn, popupHeight).catch((e) => { try { log(e); } catch(_){} });
+
         // Start update timer
         if (this._updateTimeoutId) {
             GLib.source_remove(this._updateTimeoutId);
         }
+        // Slightly less frequent updates and avoid overlapping update runs
         this._updateTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
-            this._updateAllInfo();
+            if (this._updateInProgress) return true;
+            this._updateInProgress = true;
+            this._updateAllInfo()
+                .catch(e => { try { log(e); } catch(_){} })
+                .finally(() => { this._updateInProgress = false; });
             return true;
         });
     }
@@ -313,29 +329,30 @@ export class UIManager {
             { height: Math.floor(popupHeight * 0.1), type: 'power' }
         ];
 
+        // create shells synchronously, populate sections in parallel
+        const tasks = [];
         for (const section of sections) {
             const sectionColumn = this._createColumn(null, section.height);
-            
+            column.add_child(sectionColumn);
             switch (section.type) {
                 case 'device':
-                    await this._createDeviceSection(sectionColumn);
+                    tasks.push(this._createDeviceSection(sectionColumn));
                     break;
                 case 'network':
-                    await this._createNetworkSection(sectionColumn);
+                    tasks.push(this._createNetworkSection(sectionColumn));
                     break;
                 case 'memory':
-                    await this._createMemorySection(sectionColumn);
+                    tasks.push(this._createMemorySection(sectionColumn));
                     break;
                 case 'storage':
-                    await this._createStorageSection(sectionColumn);
+                    tasks.push(this._createStorageSection(sectionColumn));
                     break;
                 case 'power':
-                    await this._createPowerSection(sectionColumn);
+                    tasks.push(this._createPowerSection(sectionColumn));
                     break;
             }
-            
-            column.add_child(sectionColumn);
         }
+        await Promise.allSettled(tasks);
     }
 
     async _createRightColumn(column, popupHeight) {
@@ -349,23 +366,24 @@ export class UIManager {
             { height: Math.floor(popupHeight * 0.22), type: 'gpu' }
         ];
 
+        // create shells synchronously, populate sections in parallel
+        const tasks = [];
         for (const section of sections) {
             const sectionColumn = this._createColumn(null, section.height);
-            
+            column.add_child(sectionColumn);
             switch (section.type) {
                 case 'os':
-                    await this._createOSSection(sectionColumn);
+                    tasks.push(this._createOSSection(sectionColumn));
                     break;
                 case 'cpu':
-                    await this._createCPUSection(sectionColumn);
+                    tasks.push(this._createCPUSection(sectionColumn));
                     break;
                 case 'gpu':
-                    await this._createGPUSection(sectionColumn);
+                    tasks.push(this._createGPUSection(sectionColumn));
                     break;
             }
-            
-            column.add_child(sectionColumn);
         }
+        await Promise.allSettled(tasks);
     }
 
     _createBackColumn(column, popupHeight) {
@@ -862,7 +880,8 @@ export class UIManager {
 
     async _updateAllInfo() {
         if (!this._main_screen) return;
-        await Promise.all([
+        // Run updates in parallel and tolerate individual failures
+        await Promise.allSettled([
             this._updateDeviceInfo(),
             this._updateNetworkInfo(),
             this._updateMemoryInfo(),
@@ -923,4 +942,4 @@ export class UIManager {
             this._labelTimeoutIds = [];
         }
     }
-} 
+}

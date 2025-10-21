@@ -3,12 +3,26 @@ import { BaseModule } from './baseModule.js';
 export class GPUModule extends BaseModule {
     constructor() {
         super(2000); // 2 second cache TTL
+        // cache results of which checks to avoid repeating them every update
+        this._execCache = {};
+        // track ongoing background refresh to avoid duplicate parallel refreshes
+        this._bgRefreshInProgress = false;
     }
 
     async getGPUInfo() {
+        // If cache valid, return it immediately
         if (this._isCacheValid()) {
             return this._cache.data;
         }
+
+        // If we have stale cached data, return it immediately and refresh in background
+        if (this._cache && this._cache.data) {
+            // kick off background refresh but don't await it
+            this._refreshGPUInfo().catch(() => {});
+            return this._cache.data;
+        }
+
+        // No cache at all: do a one-time fetch (first call) and await it
         return new Promise((resolve) => {
             this._getGpuInfoAsync((result) => {
                 this._updateCache(result);
@@ -17,11 +31,43 @@ export class GPUModule extends BaseModule {
         });
     }
 
+    // Non-blocking background refresh (deduplicated)
+    async _refreshGPUInfo() {
+        if (this._bgRefreshInProgress) return;
+        this._bgRefreshInProgress = true;
+        try {
+            await new Promise((resolve) => {
+                this._getGpuInfoAsync((result) => {
+                    this._updateCache(result);
+                    resolve(result);
+                });
+            });
+        } catch (e) {
+            // ignore
+        } finally {
+            this._bgRefreshInProgress = false;
+        }
+    }
+
+    // helper to check executables once
+    async _hasExecutable(bin) {
+        if (this._execCache[bin] !== undefined) return this._execCache[bin];
+        try {
+            const out = await this._executeCommand(['which', bin]);
+            const exists = !!(out && out.trim());
+            this._execCache[bin] = exists;
+            return exists;
+        } catch (e) {
+            this._execCache[bin] = false;
+            return false;
+        }
+    }
+
     async _getNvidiaInfo() {
         const gpus = [];
         try {
-            const nvidiaPath = await this._executeCommand(['which', 'nvidia-smi']);
-            if (!nvidiaPath.trim()) return gpus;
+            const hasNvidia = await this._hasExecutable('nvidia-smi');
+            if (!hasNvidia) return gpus;
             const nvidiaData = await this._executeCommand([
                 'nvidia-smi',
                 '--query-gpu=name,memory.total,memory.used,temperature.gpu',
@@ -65,8 +111,8 @@ export class GPUModule extends BaseModule {
     async _getAmdInfo() {
         const gpus = [];
         try {
-            const amdPath = await this._executeCommand(['which', 'rocm-smi']);
-            if (amdPath.trim()) {
+            const hasAmd = await this._hasExecutable('rocm-smi');
+            if (hasAmd) {
                 const amdData = await this._executeCommand([
                     'rocm-smi',
                     '--showproductname',
@@ -112,8 +158,24 @@ export class GPUModule extends BaseModule {
             const lspciOutput = await this._executeCommand(['lspci']);
             const arcMatch = lspciOutput.match(/VGA.*Intel.*(Arc|DG2).*\[(.*?)\]/i);
             const intelMatch = lspciOutput.match(/VGA.*Intel.*\[(.*?)\]/i);
-            // Try intel_gpu_top first
-            const igttStats = await this._getIntelGpuTopStats();
+
+            let igttStats = null;
+            try {
+                const useIntelGpuTop = (typeof process !== 'undefined' && process.env && process.env.ENABLE_INTEL_GPU_TOP === '1');
+                if (useIntelGpuTop) {
+                    const hasIntelGpuTop = await this._hasExecutable('intel_gpu_top');
+                    if (hasIntelGpuTop) {
+                        try {
+                            igttStats = await this._getIntelGpuTopStats();
+                        } catch (e) {
+                            igttStats = null;
+                        }
+                    }
+                }
+            } catch (e) {
+                igttStats = null;
+            }
+
             if (igttStats) {
                 let name = arcMatch ? `Intel Arc GPU: ${arcMatch[2] || 'DG2'}` : (intelMatch ? intelMatch[1] : 'Intel GPU');
                 gpus.push({
@@ -182,9 +244,8 @@ export class GPUModule extends BaseModule {
 
     async _getIntelGpuTopStats() {
         try {
-            const igttPath = await this._executeCommand(['which', 'intel_gpu_top']);
-            if (!igttPath.trim()) return null;
-            const output = await this._executeCommand(['intel_gpu_top', '-J', '-s', '1000']);
+            // reduce sampling time to avoid blocking for 1s; 200ms gives quicker, lower-overhead snapshot
+            const output = await this._executeCommand(['intel_gpu_top', '-J', '-s', '200']);
             const lines = output.trim().split('\n').filter(Boolean);
             let stats = null;
             for (let i = lines.length - 1; i >= 0; i--) {
@@ -215,6 +276,7 @@ export class GPUModule extends BaseModule {
     }
 
     // Fallback: Try to get clockspeed from /sys/class/drm/card*/device/ for any GPU if not already set
+// Fallback: Try to get clockspeed from /sys/class/drm/card*/device/ for any GPU if not already set
     async _addFallbackClockspeed(gpus) {
         const fs = imports.gi.Gio;
         try {
@@ -307,4 +369,4 @@ export class GPUModule extends BaseModule {
     getInfo() {
         return this.getGPUInfo();
     }
-} 
+}

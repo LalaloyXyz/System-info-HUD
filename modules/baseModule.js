@@ -35,30 +35,22 @@ export class BaseModule {
 
     async _executeCommand(argv) {
         try {
-            if (Gio.SubprocessFlags) {
-                // Modern GJS (GNOME ≥ 40)
-                const subprocess = new Gio.Subprocess({
-                    argv,
-                    flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
-                });
-                subprocess.init(null);
+            const subprocess = new Gio.Subprocess({
+                argv,
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            });
+            subprocess.init(null);
 
-                return await new Promise((resolve, reject) => {
-                    subprocess.communicate_utf8_async(null, null, (proc, res) => {
-                        try {
-                            const [, stdout] = proc.communicate_utf8_finish(res);
-                            resolve(stdout ? stdout.toString() : "");
-                        } catch (e) {
-                            reject(e);
-                        }
-                    });
+            return await new Promise((resolve, reject) => {
+                subprocess.communicate_utf8_async(null, null, (proc, res) => {
+                    try {
+                        const [, stdout] = proc.communicate_utf8_finish(res);
+                        resolve(stdout ? stdout.toString() : "");
+                    } catch (e) {
+                        reject(e);
+                    }
                 });
-            } else {
-                // Fallback for older GJS
-                let [ok, out, err, status] = GLib.spawn_command_line_sync(argv.join(" "));
-                if (!ok) throw new Error(`Command failed: ${argv.join(" ")}`);
-                return out ? out.toString() : "";
-            }
+            });
         } catch (e) {
             logError(e, `Error executing: ${argv.join(" ")}`);
             return "";
