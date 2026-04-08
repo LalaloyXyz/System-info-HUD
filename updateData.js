@@ -31,17 +31,20 @@ export function updateCPUData({ cpuName, coreBox }, cpuInfo, St) {
     }
 }
 
-export function updateMemoryData({ memoryUse, memoryCache }, memoryInfo) {
+export function updateMemoryData({ memoryUse, memorySwap, memoryCache }, memoryInfo) {
     if (!memoryInfo) {
         if (memoryUse) memoryUse.text = 'Error: No data';
         if (memoryCache) memoryCache.text = '';
+        if (memorySwap) memorySwap.text = '';
         return;
     }
     if (memoryInfo.error) {
         if (memoryUse) memoryUse.text = memoryInfo.error;
         if (memoryCache) memoryCache.text = '';
+        if (memorySwap) memorySwap.text = '';
     } else {
         if (memoryUse) memoryUse.text = `${memoryInfo.loadEmoji} [ ${memoryInfo.use} / ${memoryInfo.max} ] [${memoryInfo.percent}]`;
+        if (memorySwap) memorySwap.text = `Swap ${memoryInfo.swapUse} / ${memoryInfo.swapMax} [${memoryInfo.swapPercent}]`;
         if (memoryCache) memoryCache.text = `Cache ${memoryInfo.cache}`;
     }
 }

@@ -169,20 +169,20 @@ export class CPUModule extends BaseModule {
             
             // Universal temperature patterns that work for both Intel and AMD
             const tempPatterns = [
-                /^Core\s+(\d+):\s+\+([\d.]+)°C/mg,           // Standard core temp
-                /^Core\s+\d+\s+\(PECI\s+\d+\):\s+\+([\d.]+)°C/mg,  // PECI core temps
-                /^CPU\s+Core\s+(\d+):\s+\+([\d.]+)°C/mg,     // Alternative core temp format
-                /^Package\s+id\s+\d+:\s+\+([\d.]+)°C/mg,     // Package temp
-                /^Package\s+\d+:\s+\+([\d.]+)°C/mg,          // Alternative package temp
-                /^CPU\s+Temperature:\s+\+([\d.]+)°C/mg,      // Generic CPU temp
+                /^\s*Core\s+(\d+):\s*\+?([\d.]+)\s*°?\s*C/mg,           // Standard core temp
+                /^\s*Core\s+\d+\s+\(PECI\s+\d+\):\s*\+?([\d.]+)\s*°?\s*C/mg,  // PECI core temps
+                /^\s*CPU\s+Core\s+(\d+):\s*\+?([\d.]+)\s*°?\s*C/mg,     // Alternative core temp format
+                /^\s*Package\s+id\s+\d+:\s*\+?([\d.]+)\s*°?\s*C/mg,     // Package temp
+                /^\s*Package\s+\d+:\s*\+?([\d.]+)\s*°?\s*C/mg,          // Alternative package temp
+                /^\s*CPU\s+Temperature:\s*\+?([\d.]+)\s*°?\s*C/mg,      // Generic CPU temp
                 // AMD specific patterns
-                /^Tctl:\s+\+([\d.]+)°C/mg,                   // AMD Tctl
-                /^Tdie:\s+\+([\d.]+)°C/mg,                   // AMD Tdie
-                /^CPU\s+Tctl\/Tdie:\s+\+([\d.]+)°C/mg,       // Alternative AMD temp
+                /^\s*Tctl:\s*\+?([\d.]+)\s*°?\s*C/mg,                   // AMD Tctl
+                /^\s*Tdie:\s*\+?([\d.]+)\s*°?\s*C/mg,                   // AMD Tdie
+                /^\s*CPU\s+Tctl\/Tdie:\s*\+?([\d.]+)\s*°?\s*C/mg,       // Alternative AMD temp
                 // Intel specific patterns
-                /^Package\s+id\s+0:\s+\+([\d.]+)°C/mg,       // Intel package temp
-                /^Core\s+\d+\s+\(PECI\s+\d+\):\s+\+([\dn.]+)°C/mg,  // Intel PECI (tolerant)
-                /^CPU\s+Package:\s+\+([\d.]+)°C/mg           // Intel package temp
+                /^\s*Package\s+id\s+0:\s*\+?([\d.]+)\s*°?\s*C/mg,       // Intel package temp
+                /^\s*Core\s+\d+\s+\(PECI\s+\d+\):\s*\+?([\d.]+)\s*°?\s*C/mg,  // Intel PECI
+                /^\s*CPU\s+Package:\s*\+?([\d.]+)\s*°?\s*C/mg           // Intel package temp
             ];
             
             let globalTemp = null;
@@ -212,7 +212,7 @@ export class CPUModule extends BaseModule {
             }
 
             if (Object.keys(coreTemps).length === 0) {
-                const anyTempMatch = sensorText.match(/\+([\d.]+)°C/);
+                const anyTempMatch = sensorText.match(/\+?([\d.]+)\s*°?\s*C/);
                 if (anyTempMatch) {
                     const temp = parseFloat(anyTempMatch[1]);
                     for (let i = 0; i < Math.ceil(coreCount / 2); i++) {

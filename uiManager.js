@@ -1,6 +1,7 @@
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import { 
@@ -37,6 +38,7 @@ export class UIManager {
         this._useAnimation = true; // Default: use animation
         this._labelTimeoutIds = []; // Track label animation timeouts
         this._updateInProgress = false; // prevent overlapping updates
+        this._mainScreenKeyPressId = null;
     }
 
     createIndicator() {
@@ -222,6 +224,10 @@ export class UIManager {
 
         actor.connect('motion-event', (actor, event) => {
             if (!dragging) return Clutter.EVENT_PROPAGATE;
+            if (!(event.get_state() & Clutter.ModifierType.BUTTON1_MASK)) {
+                dragging = false;
+                return Clutter.EVENT_PROPAGATE;
+            }
             const [x, y] = event.get_coords();
             const dx = x - dragStartX;
             const dy = y - dragStartY;
@@ -230,6 +236,9 @@ export class UIManager {
         });
 
         actor.connect('button-release-event', () => {
+            if (!dragging)
+                return Clutter.EVENT_PROPAGATE;
+
             dragging = false;
             return Clutter.EVENT_STOP;
         });
@@ -255,24 +264,43 @@ export class UIManager {
 
         // Create columns
         const frontColumn = this._createColumn(Math.floor(popupWidth * 0.05));
-        const leftColumn = this._createColumn(Math.floor(popupWidth * 0.48));
+        const leftColumn = this._createColumn(Math.floor(popupWidth * 0.44));
+        const betweenColumn = this._createColumn(Math.floor(popupWidth * 0.03));
         const rightColumn = this._createColumn(Math.floor(popupWidth * 0.42));
+        const bebackColumn = this._createColumn(Math.floor(popupWidth * 0.01));
         const backColumn = this._createColumn(Math.floor(popupWidth * 0.05));
 
         // Add columns to main screen
         this._main_screen.add_child(frontColumn);
         this._main_screen.add_child(leftColumn);
+        this._main_screen.add_child(betweenColumn);
         this._main_screen.add_child(rightColumn);
+        this._main_screen.add_child(bebackColumn);
         this._main_screen.add_child(backColumn);
 
-        // Enable dragging
-        this._enableDrag(this._main_screen);
-
+        // Enable dragging on non-button columns to avoid click conflicts.
+        this._enableDrag(frontColumn);
+        this._enableDrag(leftColumn);
+        this._enableDrag(betweenColumn);
+        this._enableDrag(rightColumn);
+        this._enableDrag(bebackColumn);
+        
         // Set size and immediately add to layout so animation can play without waiting for data
         this._main_screen.set_size(popupWidth, popupHeight);
         Main.layoutManager.addChrome(this._main_screen, {
             trackFullscreen: true,
         });
+
+        // Allow Esc to close the popup.
+        this._mainScreenKeyPressId = this._main_screen.connect('key-press-event', (_actor, event) => {
+            if (event.get_key_symbol() === Clutter.KEY_Escape) {
+                this._indicator.remove_style_class_name('active');
+                this.destroyMainScreen();
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
+        this._main_screen.grab_key_focus();
 
         // Compute position and play animation immediately
         const [_, natWidth] = this._main_screen.get_preferred_width(-1);
@@ -323,7 +351,7 @@ export class UIManager {
             { height: Math.floor(popupHeight * 0.12), type: 'network' },
             { height: Math.floor(popupHeight * 0.025), type: 'space' },
             { height: Math.floor(popupHeight * 0.12), type: 'memory' },
-            { height: Math.floor(popupHeight * 0.025), type: 'space' },
+            { height: Math.floor(popupHeight * 0.030), type: 'space' },
             { height: Math.floor(popupHeight * 0.24), type: 'storage' },
             { height: Math.floor(popupHeight * 0.005), type: 'space' },
             { height: Math.floor(popupHeight * 0.1), type: 'power' }
@@ -392,31 +420,116 @@ export class UIManager {
 
         const themeColors = this._updateThemeColors();
         const buttonsRow = new St.BoxLayout({
-            vertical: false,
+            vertical: true,
             x_align: Clutter.ActorAlign.END,
             x_expand: true,
             style: 'spacing: 6px;'
         });
 
-        this._closeButton = new St.Button({
-            style: `background-color: #f44336;
-                    color: white;
-                    width: 35px; 
-                    height: 35px; 
-                    border-radius: 5px; 
-                    border: 2px solid ${themeColors.accent};\
-                    font-weight: bold;`,
-            label: 'X',
-        });
+        const buttonConfigs = [
+            {
+                key: 'close',
+                label: 'X',
+                bg: '#f44336',
+                onClick: () => {
+                    this._indicator.remove_style_class_name('active');
+                    this.destroyMainScreen();
+                }
+            },
+            {
+                key: 'copy',
+                iconPath: `${this._extension.path}/assets/copy-symbolic.svg`,
+                bg: '#1e88e5',
+                onClick: () => {
+                    this._copySystemInfoToClipboard().catch((error) => {
+                        console.error('Error copying info:', error);
+                    });
+                }
+            }
+        ];
 
-        this._closeButton.connect('clicked', () => {
-            this._indicator.remove_style_class_name('active');
-            this.destroyMainScreen();
-        });
+        for (const cfg of buttonConfigs) {
+            const button = new St.Button({
+                style: `background-color: ${cfg.bg};
+                        color: white;
+                        width: 35px; 
+                        height: 35px; 
+                        border-radius: 5px; 
+                        border: 2px solid ${themeColors.accent};
+                        font-weight: bold;`,
+            });
+            if (cfg.iconPath) {
+                button.set_child(new St.Icon({
+                    gicon: Gio.icon_new_for_string(cfg.iconPath),
+                    icon_size: 16,
+                }));
+            } else {
+                button.label = cfg.label;
+            }
+            button.connect('clicked', cfg.onClick);
 
-        // copy button moved to front column top area
-        buttonsRow.add_child(this._closeButton);
+            if (cfg.key === 'copy')
+                this._copyButton = button;
+            else if (cfg.key === 'close')
+                this._closeButton = button;
+
+            buttonsRow.add_child(button);
+        }
         topEndColumn.add_child(buttonsRow);
+    }
+
+    async _copySystemInfoToClipboard() {
+        const info = await this._systemLink.getAllInfo();
+        if (!info || info.error) {
+            return;
+        }
+
+        const memory = info.memory || {};
+        const network = info.network || {};
+        const system = info.system || {};
+        const cpu = info.cpu || {};
+        const power = info.power || 'Unknown';
+        const storage = typeof info.storage === 'string' ? info.storage : '';
+        const coreSpeeds = Array.isArray(cpu.coreSpeeds) ? cpu.coreSpeeds : [];
+        const storageLines = storage
+            ? storage.split('\n').filter(line => line.trim().length > 0).map(line => `  ${line}`)
+            : ['  N/A'];
+
+        const memoryLine = `RAM: ${memory.use || 'N/A'} / ${memory.max || 'N/A'} (${memory.percent || 'N/A'}) | ` +
+            `Cache: ${memory.cache || 'N/A'} | Swap: ${memory.swapUse || 'N/A'} / ${memory.swapMax || 'N/A'} (${memory.swapPercent || 'N/A'})`;
+
+        const text = [
+            `Uptime: ${info.uptime || 'Unknown'}`,
+            `OS: ${system.osName || 'Unknown'} [${system.osType || 'Unknown'}]`,
+            `Kernel: ${system.kernelVersion || 'Unknown'}`,
+            `CPU: ${cpu.cpu || 'Unknown'} x ${cpu.core || '0'}`,
+            ...(coreSpeeds.length > 0
+                ? ['CPU Per-core:', ...coreSpeeds.map(line => `  ${line}`)]
+                : ['CPU Per-core: N/A']),
+            `GPU: ${info.gpu || 'Unknown'}`, memoryLine,
+            'Storage:',
+            ...storageLines,
+            `Network: ${network.wifiSSID || 'Unknown'} | LAN: ${network.lanIP || 'Unknown'} | Public: ${network.publicIP || 'Unknown'}`,
+            `Power: ${power || 'Unknown'}`
+        ].join('\n');
+
+        const clipboard = St.Clipboard.get_default();
+        clipboard.set_text(St.ClipboardType.CLIPBOARD, text);
+
+        if (this._copyButton) {
+            this._copyButton.set_child(new St.Icon({
+                icon_name: 'emblem-ok-symbolic',
+                icon_size: 16,
+            }));
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
+                if (this._copyButton)
+                    this._copyButton.set_child(new St.Icon({
+                        gicon: Gio.icon_new_for_string(`${this._extension.path}/assets/copy-symbolic.svg`),
+                        icon_size: 16,
+                    }));
+                return GLib.SOURCE_REMOVE;
+            });
+        }
     }
 
     async _createDeviceSection(column) {
@@ -544,25 +657,35 @@ export class UIManager {
             text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
         });
+        this._memorySwap = new St.Label({
+            text: 'Loading...',
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 10px;`
+        });
         this._memoryCache = new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 10px;`
         });
         column.add_child(this._memoryHead);
         column.add_child(this._memoryUse);
+        column.add_child(this._memorySwap);
         column.add_child(this._memoryCache);
         try {
             const memoryInfo = await this._systemLink.getMemoryInfo();
             if (memoryInfo && memoryInfo.error) {
                 this._memoryUse.text = memoryInfo.error;
                 this._memoryCache.text = '';
+                this._memorySwap.text = '';
+
             } else if (memoryInfo) {
-                const { use, max, percent, cache, loadEmoji } = memoryInfo;
+                const { use, max, percent, cache, loadEmoji, swapUse, swapMax, swapPercent } = memoryInfo;
                 this._memoryUse.text = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
+                this._memorySwap.text = `Swap ${swapUse} / ${swapMax} [${swapPercent}]`;
                 this._memoryCache.text = `Cache ${cache}`;
+
             } else {
                 this._memoryUse.text = 'Error: No data';
                 this._memoryCache.text = '';
+                this._memorySwap.text = '';
             }
         } catch (error) {
             console.error('Error getting memory info:', error);
@@ -896,6 +1019,10 @@ export class UIManager {
 
     destroyMainScreen() {
         if (this._main_screen) {
+            if (this._mainScreenKeyPressId) {
+                this._main_screen.disconnect(this._mainScreenKeyPressId);
+                this._mainScreenKeyPressId = null;
+            }
             const [x, y] = this._main_screen.get_position();
             const [_, natHeight] = this._main_screen.get_preferred_height(-1);
             if (this._useAnimation) {

@@ -6,6 +6,7 @@ export class NetworkModule extends BaseModule {
     constructor() {
         super(1000); // 1 second cache TTL
         this._networkInterface = { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 };
+        this._execCache = {};
         this._cacheData = {
             lanIP: { data: null, timestamp: 0 },
             publicIP: { data: null, timestamp: 0 },
@@ -18,6 +19,20 @@ export class NetworkModule extends BaseModule {
             wifiSSID: 10000,     // 10 s
             networkSpeed: 1000   // 1 s
         };
+    }
+
+    async _hasExecutable(bin) {
+        if (this._execCache[bin] !== undefined)
+            return this._execCache[bin];
+        try {
+            const out = await this._executeCommand(['which', bin]);
+            const exists = !!(out && out.trim());
+            this._execCache[bin] = exists;
+            return exists;
+        } catch (e) {
+            this._execCache[bin] = false;
+            return false;
+        }
     }
 
     async getNetworkInfo() {
@@ -116,18 +131,54 @@ export class NetworkModule extends BaseModule {
             return this._cacheData.wifiSSID.data;
         }
 
+        let ssidTrimmed = '';
+
         try {
-            const ssid = await this._executeCommand(['iwgetid', '-r']);
-            const ssidTrimmed = ssid.trim() || "Not connected";
-            this._cacheData.wifiSSID = {
-                data: ssidTrimmed,
-                timestamp: now
-            };
-            return ssidTrimmed;
+            // Preferred: iwgetid (wireless-tools)
+            if (await this._hasExecutable('iwgetid')) {
+                const ssid = await this._executeCommand(['iwgetid', '-r']);
+                ssidTrimmed = (ssid || '').trim();
+            }
         } catch (e) {
-            console.error('Failed to get SSID:', e);
+            ssidTrimmed = '';
         }
-        return 'Unknown';
+
+        if (!ssidTrimmed) {
+            try {
+                // Fedora/NetworkManager fallback
+                if (await this._hasExecutable('nmcli')) {
+                    const nmOut = await this._executeCommand([
+                        'nmcli', '-t', '-f', 'ACTIVE,SSID', 'dev', 'wifi'
+                    ]);
+                    const active = nmOut.split('\n').find(line => line.startsWith('yes:'));
+                    if (active)
+                        ssidTrimmed = active.slice(4).trim();
+                }
+            } catch (e) {
+                ssidTrimmed = '';
+            }
+        }
+
+        if (!ssidTrimmed) {
+            try {
+                // Final fallback from iw output
+                if (await this._hasExecutable('iw')) {
+                    const iwOut = await this._executeCommand(['iw', 'dev']);
+                    const match = iwOut.match(/^\s*ssid\s+(.+)$/m);
+                    if (match)
+                        ssidTrimmed = match[1].trim();
+                }
+            } catch (e) {
+                ssidTrimmed = '';
+            }
+        }
+
+        const finalSsid = ssidTrimmed || 'Not connected';
+        this._cacheData.wifiSSID = {
+            data: finalSsid,
+            timestamp: now
+        };
+        return finalSsid;
     }
 
     async getNetworkSpeed() {
