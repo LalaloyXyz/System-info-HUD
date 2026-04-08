@@ -276,9 +276,7 @@ export class GPUModule extends BaseModule {
     }
 
     // Fallback: Try to get clockspeed from /sys/class/drm/card*/device/ for any GPU if not already set
-// Fallback: Try to get clockspeed from /sys/class/drm/card*/device/ for any GPU if not already set
     async _addFallbackClockspeed(gpus) {
-        const fs = imports.gi.Gio;
         try {
             const cardDirs = GLib.glob_sync('/sys/class/drm/card*/device/', 0, null);
             for (let i = 0; i < gpus.length; i++) {
@@ -290,18 +288,12 @@ export class GPUModule extends BaseModule {
                         for (const file of freqFiles) {
                             const path = cardDir + file;
                             try {
-                                const fileObj = fs.File.new_for_path(path);
-                                if (fileObj.query_exists(null)) {
-                                    const [ok, contents] = fileObj.load_contents(null);
-                                    if (ok) {
-                                        const text = contents.toString();
-                                        // Try to extract MHz value
-                                        const match = text.match(/(\d+)(?:\s*MHz)?/);
-                                        if (match) {
-                                            gpu.clockspeed = match[1];
-                                            break;
-                                        }
-                                    }
+                                const text = await this._readFile(path);
+                                // Try to extract MHz value
+                                const match = text.match(/(\d+)(?:\s*MHz)?/);
+                                if (match) {
+                                    gpu.clockspeed = match[1];
+                                    break;
                                 }
                             } catch (e) { }
                         }
