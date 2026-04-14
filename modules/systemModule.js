@@ -24,7 +24,7 @@ export class SystemModule extends BaseModule {
                 }
             }
         } catch (e) {
-            console.error('Failed to read /etc/os-release:', e);
+            logError(e, 'System HUD: Failed to read /etc/os-release');
         }
 
         const osType = GLib.SIZEOF_VOID_P === 8 ? 
@@ -36,7 +36,7 @@ export class SystemModule extends BaseModule {
             kernelVersion = await this._executeCommand(['uname', '-r']);
             kernelVersion = kernelVersion.trim();
         } catch (e) {
-            console.error('Failed to get kernel version:', e);
+            logError(e, 'System HUD: Failed to get kernel version');
         }
 
         // GNOME Shell version
@@ -53,7 +53,7 @@ export class SystemModule extends BaseModule {
                 if (envVersion) gnomeVersion = envVersion;
             }
         } catch (e) {
-            console.error('Failed to get GNOME version:', e);
+            logError(e, 'System HUD: Failed to get GNOME version');
         }
 
         // Session type (Wayland/X11)
@@ -90,7 +90,7 @@ export class SystemModule extends BaseModule {
             
             return result;
         } catch (e) {
-            console.error('Failed to get uptime:', e);
+            logError(e, 'System HUD: Failed to get uptime');
         }
         return 'Unknown uptime';
     }

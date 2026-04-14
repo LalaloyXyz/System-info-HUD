@@ -1,6 +1,8 @@
 // updateData.js
 // Efficient, dynamic UI update logic for all sections
 
+const DETAIL_LABEL_STYLE = 'font-weight: bold; font-size: 11px;';
+
 export function updateCPUData({ cpuName, coreBox }, cpuInfo, St) {
     if (cpuName && cpuInfo)
         cpuName.text = `${cpuInfo.cpu} x ${cpuInfo.core}`;
@@ -13,12 +15,15 @@ export function updateCPUData({ cpuName, coreBox }, cpuInfo, St) {
             if (children[i].text !== cpuInfo.coreSpeeds[i]) {
                 children[i].text = cpuInfo.coreSpeeds[i];
             }
+            children[i].set_style(DETAIL_LABEL_STYLE);
+            children[i].show();
         }
         // Add new labels if needed
         if (existingCount < newCount) {
             for (let i = existingCount; i < newCount; i++) {
                 const label = new St.Label({
                     text: cpuInfo.coreSpeeds[i],
+                    style: DETAIL_LABEL_STYLE,
                     x_expand: true
                 });
                 coreBox.add_child(label);
@@ -71,12 +76,15 @@ export function updateStorageData({ storageBox }, storageInfo, St) {
         if (children[i].text !== storageInfoLines[i]) {
             children[i].text = storageInfoLines[i];
         }
+        children[i].set_style(DETAIL_LABEL_STYLE);
+        children[i].show();
     }
     // Add new labels if needed
     if (children.length < storageInfoLines.length) {
         for (let i = children.length; i < storageInfoLines.length; i++) {
             const label = new St.Label({
                 text: storageInfoLines[i],
+                style: DETAIL_LABEL_STYLE,
                 x_expand: true
             });
             storageBox.add_child(label);

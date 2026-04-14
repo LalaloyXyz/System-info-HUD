@@ -52,13 +52,5 @@ sudo pacman -S lm_sensors pciutils wireless_tools upower
 sudo zypper install sensors pciutils wireless-tools upower
 ```
 
-## Installation
-1. Clone or download this repository.
-2. Copy the extension folder to your GNOME extensions directory (usually `~/.local/share/gnome-shell/extensions/`).
-3. Enable the extension using GNOME Tweaks or Extensions app.
-4. Restart GNOME Shell if needed.
-
-or download in gnome shell search System HUD
-
 ## Contributing
 Pull requests and issues are welcome!

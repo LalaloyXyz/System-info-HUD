@@ -33,7 +33,7 @@ export class StorageModule extends BaseModule {
             this._updateCache(finalResult);
             return finalResult;
         } catch (e) {
-            console.error('Error reading storage data:', e);
+            logError(e, 'System HUD: Error reading storage data');
             return "Error reading storage data";
         }
     }

@@ -51,7 +51,7 @@ export class PowerModule extends BaseModule {
             this._updateCache(info);
             return info;
         } catch (e) {
-            console.error('Error reading power data:', e);
+            logError(e, 'System HUD: Error reading power data');
             return "Error reading power data";
         }
     }

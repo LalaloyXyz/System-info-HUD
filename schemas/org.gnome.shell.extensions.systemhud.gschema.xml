@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.systemhud" path="/org/gnome/shell/extensions/systemhud/">
+    <key name="enable-animations" type="b">
+      <default>true</default>
+      <summary>Enable animations</summary>
+      <description>Whether the HUD uses open/close animations.</description>
+    </key>
+    <key name="show-copy-button" type="b">
+      <default>true</default>
+      <summary>Show copy button</summary>
+      <description>Whether the HUD shows a button to copy the displayed system information to the clipboard.</description>
+    </key>
+    <key name="refresh-interval-ms" type="i">
+      <default>1000</default>
+      <range min="500" max="10000"/>
+      <summary>Refresh interval</summary>
+      <description>Base data fetch interval in milliseconds. Lower values refresh more often, while higher values reduce load and improve smoothness.</description>
+    </key>
+  </schema>
+</schemalist>

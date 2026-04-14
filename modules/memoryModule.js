@@ -64,7 +64,7 @@ export class MemoryModule extends BaseModule {
             this._updateCache(result);
             return result;
         } catch (e) {
-            console.error('Error reading memory info:', e);
+            logError(e, 'System HUD: Error reading memory info');
             return { error: "Error reading memory info" };
         }
     }

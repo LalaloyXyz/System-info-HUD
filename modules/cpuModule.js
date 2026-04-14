@@ -97,7 +97,7 @@ export class CPUModule extends BaseModule {
             try {
                 freqText = await this._readFile('/proc/cpuinfo');
             } catch (e) {
-                console.error('Error reading /proc/cpuinfo:', e);
+                logError(e, 'System HUD: Error reading /proc/cpuinfo');
             }
             
             const coreSpeeds = [];
@@ -125,7 +125,7 @@ export class CPUModule extends BaseModule {
                     }
                 });
             } catch (e) {
-                console.error('Error reading CPU frequencies:', e);
+                logError(e, 'System HUD: Error reading CPU frequencies');
             }
 
             for (let i = 0; i < coreCount; i++) {
@@ -252,7 +252,7 @@ export class CPUModule extends BaseModule {
             this._updateCache(finalResult);
             return finalResult;
         } catch (e) {
-            console.error('Error reading CPU info:', e);
+            logError(e, 'System HUD: Error reading CPU info');
             return {
                 cpu: 'Unknown CPU',
                 core: 0,

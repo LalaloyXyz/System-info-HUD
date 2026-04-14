@@ -7,6 +7,7 @@ export class NetworkModule extends BaseModule {
         super(1000); // 1 second cache TTL
         this._networkInterface = { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 };
         this._execCache = {};
+        this._publicIPInFlight = false;
         this._cacheData = {
             lanIP: { data: null, timestamp: 0 },
             publicIP: { data: null, timestamp: 0 },
@@ -18,6 +19,60 @@ export class NetworkModule extends BaseModule {
             publicIP: 120000,    // 2 m
             wifiSSID: 10000,     // 10 s
             networkSpeed: 1000   // 1 s
+        };
+    }
+
+    _getCachedPublicIP(now = Date.now()) {
+        if (this._cacheData.publicIP.data &&
+            now - this._cacheData.publicIP.timestamp < this._cacheTTLData.publicIP) {
+            return this._cacheData.publicIP.data;
+        }
+        return null;
+    }
+
+    _ensurePublicIPRefresh(now = Date.now()) {
+        const cached = this._getCachedPublicIP(now);
+        if (cached || this._publicIPInFlight)
+            return;
+
+        this._publicIPInFlight = true;
+        this._fetchAndCachePublicIP()
+            .catch(e => logError(e, 'System HUD: Failed to refresh public IP'))
+            .finally(() => { this._publicIPInFlight = false; });
+    }
+
+    async _fetchAndCachePublicIP() {
+        const session = new Soup.Session();
+        try {
+            // libsoup timeout is in seconds; keep it low so UI isn't waiting on this indefinitely.
+            session.timeout = 3;
+        } catch (e) {
+            // ignore if property is not available
+        }
+        const message = Soup.Message.new('GET', 'https://api.ipify.org');
+
+        const response = await new Promise((resolve, reject) => {
+            session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (sess, res) => {
+                try {
+                    const bytes = sess.send_and_read_finish(res);
+                    resolve(bytes ? bytes.get_data() : null);
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        });
+
+        if (!response)
+            return;
+
+        const decoder = new TextDecoder();
+        const ip = decoder.decode(response).trim();
+        if (!ip)
+            return;
+
+        this._cacheData.publicIP = {
+            data: ip,
+            timestamp: Date.now(),
         };
     }
 
@@ -41,12 +96,17 @@ export class NetworkModule extends BaseModule {
         }
 
         try {
-            const [lanIP, publicIP, wifiSSID, networkSpeed] = await Promise.all([
+            // Public IP may be slow (network request). Fetch SSID/speed/local IP first,
+            // then refresh public IP in the background and surface cached/placeholder immediately.
+            const [lanIP, wifiSSID, networkSpeed] = await Promise.all([
                 this.getLocalIP(),
-                this.getPublicIP(),
                 this.getWifiSSID(),
                 this.getNetworkSpeed()
             ]);
+
+            const now = Date.now();
+            const publicIP = this._getCachedPublicIP(now) || (this._cacheData.publicIP.data || 'Fetching…');
+            this._ensurePublicIPRefresh(now);
 
             const result = {
                 lanIP,
@@ -58,7 +118,7 @@ export class NetworkModule extends BaseModule {
             this._updateCache(result);
             return result;
         } catch (e) {
-            console.error('Error getting network info:', e);
+            logError(e, 'System HUD: Error getting network info');
             return { error: 'Failed to get network information' };
         }
     }
@@ -82,7 +142,7 @@ export class NetworkModule extends BaseModule {
                 return local_ip;
             }
         } catch (e) {
-            console.error('Failed to get LAN IP:', e);
+            logError(e, 'System HUD: Failed to get LAN IP');
         }
         return 'Unknown';
     }
@@ -96,6 +156,11 @@ export class NetworkModule extends BaseModule {
 
         try {
             const session = new Soup.Session();
+            try {
+                session.timeout = 3;
+            } catch (e) {
+                // ignore if property is not available
+            }
             const message = Soup.Message.new('GET', 'https://api.ipify.org');
             
             const response = await new Promise((resolve, reject) => {
@@ -119,7 +184,7 @@ export class NetworkModule extends BaseModule {
                 return ip;
             }
         } catch (e) {
-            console.error('Failed to get public IP:', e);
+            logError(e, 'System HUD: Failed to get public IP');
         }
         return 'Unknown';
     }
@@ -252,7 +317,7 @@ export class NetworkModule extends BaseModule {
             
             return result;
         } catch (e) {
-            console.error('NetSpeed error:', e);
+            logError(e, 'System HUD: NetSpeed error');
             return { download: '0', upload: '0' };
         }
     }

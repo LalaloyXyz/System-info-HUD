@@ -19,6 +19,7 @@ import {
     updateCPUData,
     updateMemoryData,
     updateNetworkData,
+    updateOSData,
     updateStorageData,
     updatePowerData,
     updateDeviceData,
@@ -31,14 +32,146 @@ export class UIManager {
         this._systemLink = systemLink;
         this._main_screen = null;
         this._updateTimeoutId = null;
+        this._sectionRefreshTimeoutIds = [];
+        this._refreshIntervalMs = 1000;
+        this._refreshMultipliers = {
+            device: 1,
+            network: 1.5,
+            memory: 2,
+            os: 600,
+            storage: 30,
+            power: 5,
+            cpu: 2.5,
+            gpu: 5,
+        };
+        this._refreshIntervals = {};
+        this._nextRefreshAt = {};
+        this._osDetails = null;
+        this._osHoverTimeoutId = null;
         this._themeManager = new ThemeManager();
         this._themeChangeSignal = this._themeManager.connectThemeChanged(
             this._onThemeChanged.bind(this)
         );
+        this._settings = null;
+        this._settingsSignalIds = [];
         this._useAnimation = true; // Default: use animation
+        this._showCopyButton = true; // Default: show copy button
         this._labelTimeoutIds = []; // Track label animation timeouts
         this._updateInProgress = false; // prevent overlapping updates
         this._mainScreenKeyPressId = null;
+        this._applyRefreshInterval(this._refreshIntervalMs);
+
+        try {
+            this._settings = this._extension.getSettings();
+            this._useAnimation = this._settings.get_boolean('enable-animations');
+            this._showCopyButton = this._settings.get_boolean('show-copy-button');
+            this._applyRefreshInterval(this._settings.get_int('refresh-interval-ms'));
+            this._settingsSignalIds.push(this._settings.connect('changed::enable-animations', () => {
+                this._useAnimation = this._settings.get_boolean('enable-animations');
+            }));
+            this._settingsSignalIds.push(this._settings.connect('changed::show-copy-button', () => {
+                this._showCopyButton = this._settings.get_boolean('show-copy-button');
+                if (this._copyButton)
+                    this._copyButton.visible = this._showCopyButton;
+            }));
+            this._settingsSignalIds.push(this._settings.connect('changed::refresh-interval-ms', () => {
+                this._applyRefreshInterval(this._settings.get_int('refresh-interval-ms'));
+            }));
+        } catch (e) {
+            // Missing schemas/gschemas.compiled during development is non-fatal:
+            // fall back to defaults.
+            this._settings = null;
+            this._settingsSignalIds = [];
+        }
+    }
+
+    _applyRefreshInterval(intervalMs) {
+        this._refreshIntervalMs = Math.max(500, Math.min(10000, intervalMs));
+        this._refreshIntervals = {};
+
+        for (const [section, multiplier] of Object.entries(this._refreshMultipliers))
+            this._refreshIntervals[section] = Math.round(this._refreshIntervalMs * multiplier);
+
+        this._nextRefreshAt = {};
+        this._restartUpdateLoop();
+    }
+
+    _restartUpdateLoop() {
+        if (this._updateTimeoutId) {
+            GLib.source_remove(this._updateTimeoutId);
+            this._updateTimeoutId = null;
+        }
+
+        if (!this._main_screen)
+            return;
+
+        this._updateTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this._refreshIntervalMs, () => {
+            if (this._updateInProgress)
+                return GLib.SOURCE_CONTINUE;
+
+            this._updateInProgress = true;
+            this._updateAllInfo()
+                .catch(e => {
+                    try {
+                        logError(e, 'System HUD: Error updating HUD');
+                    } catch (_) {
+                    }
+                })
+                .finally(() => {
+                    this._updateInProgress = false;
+                });
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _queueSectionRefresh(section, delayMs = 0) {
+        const timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delayMs, () => {
+            this._sectionRefreshTimeoutIds = this._sectionRefreshTimeoutIds.filter(id => id !== timeoutId);
+            this._runSectionUpdate(section).catch(error => {
+                logError(error, `System HUD: Error updating ${section} section`);
+            });
+            return GLib.SOURCE_REMOVE;
+        });
+        this._sectionRefreshTimeoutIds.push(timeoutId);
+    }
+
+    _shouldRefreshSection(section, now) {
+        return !this._nextRefreshAt[section] || now >= this._nextRefreshAt[section];
+    }
+
+    _markSectionRefreshed(section, now) {
+        this._nextRefreshAt[section] = now + (this._refreshIntervals[section] || 1000);
+    }
+
+    async _runSectionUpdate(section) {
+        switch (section) {
+        case 'device':
+            await this._updateDeviceInfo();
+            break;
+        case 'network':
+            await this._updateNetworkInfo();
+            break;
+        case 'memory':
+            await this._updateMemoryInfo();
+            break;
+        case 'os':
+            await this._updateOSInfo();
+            break;
+        case 'storage':
+            await this._updateStorageInfo();
+            break;
+        case 'power':
+            await this._updatePowerInfo();
+            break;
+        case 'cpu':
+            await this._updateCPUInfo();
+            break;
+        case 'gpu':
+            await this._updateGPUInfo();
+            break;
+        default:
+            break;
+        }
     }
 
     createIndicator() {
@@ -160,6 +293,7 @@ export class UIManager {
             }, themeColors);
             updateMemorySectionStyle({
                 memoryUse: this._memoryUse,
+                memorySwap: this._memorySwap,
                 memoryCache: this._memoryCache,
                 memoryHead: this._memoryHead
             }, themeColors);
@@ -327,19 +461,7 @@ export class UIManager {
         this._createLeftColumn(leftColumn, popupHeight).catch((e) => { try { log(e); } catch(_){} });
         this._createRightColumn(rightColumn, popupHeight).catch((e) => { try { log(e); } catch(_){} });
 
-        // Start update timer
-        if (this._updateTimeoutId) {
-            GLib.source_remove(this._updateTimeoutId);
-        }
-        // Slightly less frequent updates and avoid overlapping update runs
-        this._updateTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
-            if (this._updateInProgress) return true;
-            this._updateInProgress = true;
-            this._updateAllInfo()
-                .catch(e => { try { log(e); } catch(_){} })
-                .finally(() => { this._updateInProgress = false; });
-            return true;
-        });
+        this._restartUpdateLoop();
     }
 
     async _createLeftColumn(column, popupHeight) {
@@ -435,18 +557,21 @@ export class UIManager {
                     this._indicator.remove_style_class_name('active');
                     this.destroyMainScreen();
                 }
-            },
-            {
+            }
+        ];
+
+        if (this._showCopyButton) {
+            buttonConfigs.push({
                 key: 'copy',
                 iconPath: `${this._extension.path}/assets/copy-symbolic.svg`,
                 bg: '#1e88e5',
                 onClick: () => {
                     this._copySystemInfoToClipboard().catch((error) => {
-                        console.error('Error copying info:', error);
+                        logError(error, 'System HUD: Error copying info');
                     });
                 }
-            }
-        ];
+            });
+        }
 
         for (const cfg of buttonConfigs) {
             const button = new St.Button({
@@ -580,7 +705,7 @@ export class UIManager {
         });
 
         this._deviceWithUptime = new St.Label({
-            text: await this._systemLink.getUptime(),
+            text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
             x_align: Clutter.ActorAlign.START,
         });
@@ -592,6 +717,7 @@ export class UIManager {
 
         profileRow.add_child(deviceInfoUser);
         column.add_child(profileRow);
+        this._queueSectionRefresh('device', 0);
     }
 
     async _createNetworkSection(column) {
@@ -603,14 +729,8 @@ export class UIManager {
             text: 'Wi-Fi : ',
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
-        // Get initial network info
-        const networkInfo = await this._systemLink.getNetworkInfo();
-        const { download, upload } = networkInfo.networkSpeed || { download: '0', upload: '0' };
-        const ssid = networkInfo.wifiSSID || 'Unknown';
-        const publicIP = networkInfo.publicIP || 'Unknown';
-        const localIP = networkInfo.lanIP || 'Unknown';
         this._wifiSpeedLabel = new St.Label({
-            text: `${ssid} ↓ ${download} ↑ ${upload}`,
+            text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 13px;`
         });
         const wifiRow = new St.BoxLayout({ vertical: false });
@@ -626,7 +746,7 @@ export class UIManager {
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 12px;`
         });
         this._publicIPLabel = new St.Label({
-            text: publicIP,
+            text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
         });
         publicipRow.add_child(this._publicIPDescLabel);
@@ -637,7 +757,7 @@ export class UIManager {
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 12px;`
         });
         this._localIPLabel = new St.Label({
-            text: localIP,
+            text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
         });
         localipRow.add_child(this._localIPDescLabel);
@@ -645,6 +765,7 @@ export class UIManager {
         ipAndWiFi_LeftColumn.add_child(publicipRow);
         ipAndWiFi_LeftColumn.add_child(localipRow);
         column.add_child(ipAndWiFi_LeftColumn);
+        this._queueSectionRefresh('network', 50);
     }
 
     async _createMemorySection(column) {
@@ -669,29 +790,7 @@ export class UIManager {
         column.add_child(this._memoryUse);
         column.add_child(this._memorySwap);
         column.add_child(this._memoryCache);
-        try {
-            const memoryInfo = await this._systemLink.getMemoryInfo();
-            if (memoryInfo && memoryInfo.error) {
-                this._memoryUse.text = memoryInfo.error;
-                this._memoryCache.text = '';
-                this._memorySwap.text = '';
-
-            } else if (memoryInfo) {
-                const { use, max, percent, cache, loadEmoji, swapUse, swapMax, swapPercent } = memoryInfo;
-                this._memoryUse.text = `${loadEmoji} [ ${use} / ${max} ] [${percent}]`;
-                this._memorySwap.text = `Swap ${swapUse} / ${swapMax} [${swapPercent}]`;
-                this._memoryCache.text = `Cache ${cache}`;
-
-            } else {
-                this._memoryUse.text = 'Error: No data';
-                this._memoryCache.text = '';
-                this._memorySwap.text = '';
-            }
-        } catch (error) {
-            console.error('Error getting memory info:', error);
-            this._memoryUse.text = 'Error: Failed to load';
-            this._memoryCache.text = '';
-        }
+        this._queueSectionRefresh('memory', 100);
     }
 
     async _createStorageSection(column) {
@@ -713,28 +812,14 @@ export class UIManager {
             y_expand: true
         });
         storage_scrollView.set_child(this._storageBox);
-        try {
-            const storageInfo = await this._systemLink.getStorageInfo();
-            const storageInfoLines = storageInfo.split('\n');
-            storageInfoLines.forEach((line) => {
-                const label = new St.Label({
-                    text: line,
-                    style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
-                    x_expand: true
-                });
-                this._storageBox.add_child(label);
-            });
-        } catch (error) {
-            console.error('Error getting storage info:', error);
-            const label = new St.Label({
-                text: 'Error: Failed to load storage info',
-                style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
-                x_expand: true
-            });
-            this._storageBox.add_child(label);
-        }
+        this._storageBox.add_child(new St.Label({
+            text: 'Loading...',
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+            x_expand: true
+        }));
         column.add_child(this._storageHead);
         column.add_child(storage_scrollView);
+        this._queueSectionRefresh('storage', 250);
     }
 
     async _createPowerSection(column) {
@@ -743,89 +828,78 @@ export class UIManager {
             text: 'Power',
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
-        try {
-            const powerInfo = await this._systemLink.getPowerInfo();
-            this._powerShow = new St.Label({
-                text: powerInfo || 'No battery found',
-                style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
-            });
-        } catch (error) {
-            console.error('Error getting power info:', error);
-            this._powerShow = new St.Label({
-                text: 'Error: Failed to load',
-                style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
-            });
-        }
+        this._powerShow = new St.Label({
+            text: 'Loading...',
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+        });
         column.add_child(this._powerHead);
         column.add_child(this._powerShow);
+        this._queueSectionRefresh('power', 150);
     }
 
     async _createOSSection(column) {
         const themeColors = this._updateThemeColors();
-        try {
-            const systemInfo = await this._systemLink.getSystemInfo();
-            const { osName, osType, kernelVersion, gnomeVersion, sessionType } = systemInfo || { osName: 'Unknown', osType: 'Unknown', kernelVersion: 'Unknown', gnomeVersion: 'Unknown', sessionType: 'Unknown' };
+        this._device_OS = new St.Label({
+            text: 'OS : Loading...',
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 18px;`,
+            x_align: Clutter.ActorAlign.START,
+        });
 
-            this._device_OS = new St.Label({
-                text: `OS : ${osName} [${osType}]`,
-                style: `color: ${themeColors.text}; font-weight: bold; font-size: 18px;`,
-                x_align: Clutter.ActorAlign.START,
+        this._device_Kernel = new St.Label({
+            text: 'Kernel : Loading...',
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
+            x_align: Clutter.ActorAlign.START,
+        });
+
+        column.add_child(this._device_OS);
+        column.add_child(this._device_Kernel);
+
+        const setPrimary = () => {
+            if (this._osDetails) {
+                updateOSData({
+                    device_OS: this._device_OS,
+                    device_Kernel: this._device_Kernel
+                }, this._osDetails);
+            }
+        };
+
+        const setAlternate = () => {
+            if (!this._osDetails)
+                return;
+            this._device_Kernel.text = `GNOME : ${this._osDetails.gnomeVersion} | Session : ${this._osDetails.sessionType}`;
+        };
+
+        const connectHover = actor => {
+            actor.reactive = true;
+            actor.can_focus = true;
+            actor.track_hover = true;
+            actor.connect('enter-event', () => {
+                setAlternate();
+                return Clutter.EVENT_PROPAGATE;
             });
-
-            this._device_Kernel = new St.Label({
-                text: `Kernel : Linux ${kernelVersion}`,
-                style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
-                x_align: Clutter.ActorAlign.START,
+            actor.connect('leave-event', () => {
+                setPrimary();
+                return Clutter.EVENT_PROPAGATE;
             });
-            
-            column.add_child(this._device_OS);
-            column.add_child(this._device_Kernel);
-
-            // On cursor hover/touch show GNOME+Session on kernel line; otherwise show Kernel version
-            let revertTimeoutId = null;
-            const setPrimary = () => {
-                this._device_OS.text = `OS : ${osName} [${osType}]`;
-                this._device_Kernel.text = `Kernel : Linux ${kernelVersion}`;
-            };
-            const setAlternateHover = () => {
-                this._device_Kernel.text = `GNOME : ${gnomeVersion} | Session : ${sessionType}`;
-            };
-            const setAlternateTouch = () => {
-                // Do not show device serial; only update kernel line
-                this._device_Kernel.text = `GNOME : ${gnomeVersion} | Session : ${sessionType}`;
-            };
-            const connectHover = (actor) => {
-                actor.reactive = true;
-                actor.can_focus = true;
-                actor.track_hover = true;
-                actor.connect('enter-event', () => { setAlternateHover(); return Clutter.EVENT_PROPAGATE; });
-                actor.connect('leave-event', () => { setPrimary(); return Clutter.EVENT_PROPAGATE; });
-                actor.connect('touch-event', () => {
-                    setAlternateTouch();
-                    if (revertTimeoutId) { GLib.source_remove(revertTimeoutId); revertTimeoutId = null; }
-                    revertTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => { setPrimary(); revertTimeoutId = null; return GLib.SOURCE_REMOVE; });
-                    return Clutter.EVENT_STOP;
+            actor.connect('touch-event', () => {
+                setAlternate();
+                if (this._osHoverTimeoutId) {
+                    GLib.source_remove(this._osHoverTimeoutId);
+                    this._osHoverTimeoutId = null;
+                }
+                this._osHoverTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
+                    setPrimary();
+                    this._osHoverTimeoutId = null;
+                    return GLib.SOURCE_REMOVE;
                 });
-            };
-            connectHover(this._device_OS);
-            connectHover(this._device_Kernel);
-        } catch (error) {
-            console.error('Error getting system info:', error);
-            this._device_OS = new St.Label({
-                text: 'OS : Unknown',
-                style: `color: ${themeColors.text}; font-weight: bold; font-size: 18px;`,
-                x_align: Clutter.ActorAlign.START,
+                return Clutter.EVENT_STOP;
             });
+        };
 
-            this._device_Kernel = new St.Label({
-                text: 'Kernel : Unknown',
-                style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
-                x_align: Clutter.ActorAlign.START,
-            });
-            
-            column.add_child(this._device_OS);
-            column.add_child(this._device_Kernel);
-        }
+        connectHover(this._device_OS);
+        connectHover(this._device_Kernel);
+
+        this._queueSectionRefresh('os', 200);
     }
 
     async _createCPUSection(column) {
@@ -835,76 +909,35 @@ export class UIManager {
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         this._cpuName = new St.Label({
-            text: '',
+            text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
         });
-        // Get CPU info asynchronously
-        try {
-            const cpuInfo = await this._systemLink.getCPUInfo();
-            if (!cpuInfo || !cpuInfo.coreSpeeds) {
-                console.error('Failed to get CPU info');
-                this._cpuName.text = 'CPU: Unknown';
-                return;
-            }
-            this._cpuName.text = `${cpuInfo.cpu} x ${cpuInfo.core}`;
-            this._coreBox = new St.BoxLayout({
-                vertical: true,
-                x_expand: true,
-                y_expand: true
-            });
-            const cpu_scrollView = new St.ScrollView({
-                style_class: './assets/custom-scroll',
-                overlay_scrollbars: true,
-                enable_mouse_scrolling: true,
-                x_expand: true,
-                y_expand: true
-            });
-            cpu_scrollView.set_child(this._coreBox);
-            cpuInfo.coreSpeeds.forEach((line) => {
-                const label = new St.Label({
-                    text: line,
-                    style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
-                    x_expand: true
-                });
-                this._coreBox.add_child(label);
-            });
-            // Use a vertical box for header and CPU name
-            const cpuHeadBox = new St.BoxLayout({ vertical: true });
-            cpuHeadBox.add_child(this._cpuHead);
-            cpuHeadBox.add_child(this._cpuName);
-            column.add_child(cpuHeadBox);
-            column.add_child(cpu_scrollView);
-        } catch (error) {
-            console.error('Error getting CPU info:', error);
-            this._cpuName.text = 'CPU: Error loading';
-            this._coreBox = new St.BoxLayout({
-                vertical: true,
-                x_expand: true,
-                y_expand: true
-            });
-            const cpu_scrollView = new St.ScrollView({
-                style_class: './assets/custom-scroll',
-                overlay_scrollbars: true,
-                enable_mouse_scrolling: true,
-                x_expand: true,
-                y_expand: true
-            });
-            cpu_scrollView.set_child(this._coreBox);
-            
-            const errorLabel = new St.Label({
-                text: 'Error: Failed to load CPU info',
-                style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
-                x_expand: true
-            });
-            this._coreBox.add_child(errorLabel);
-            
-            // Use a vertical box for header and CPU name
-            const cpuHeadBox = new St.BoxLayout({ vertical: true });
-            cpuHeadBox.add_child(this._cpuHead);
-            cpuHeadBox.add_child(this._cpuName);
-            column.add_child(cpuHeadBox);
-            column.add_child(cpu_scrollView);
-        }
+        this._coreBox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            y_expand: true
+        });
+        const cpu_scrollView = new St.ScrollView({
+            style_class: './assets/custom-scroll',
+            overlay_scrollbars: true,
+            enable_mouse_scrolling: true,
+            x_expand: true,
+            y_expand: true
+        });
+        cpu_scrollView.set_child(this._coreBox);
+
+        this._coreBox.add_child(new St.Label({
+            text: 'Loading...',
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+            x_expand: true
+        }));
+
+        const cpuHeadBox = new St.BoxLayout({ vertical: true });
+        cpuHeadBox.add_child(this._cpuHead);
+        cpuHeadBox.add_child(this._cpuName);
+        column.add_child(cpuHeadBox);
+        column.add_child(cpu_scrollView);
+        this._queueSectionRefresh('cpu', 300);
     }
 
     async _createGPUSection(column) {
@@ -929,8 +962,12 @@ export class UIManager {
         gpu_scrollView.set_child(this._gpuBox);
         column.add_child(this._gpuHead);
         column.add_child(gpu_scrollView);
-        // Initial GPU info population
-        await this._updateGPUInfo();
+        this._gpuBox.add_child(new St.Label({
+            text: 'Loading...',
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+            x_expand: true
+        }));
+        this._queueSectionRefresh('gpu', 450);
     }
 
     async _updateGPUInfo() {
@@ -963,15 +1000,36 @@ export class UIManager {
                 const memoryInfo = await this._systemLink.getMemoryInfo();
                 updateMemoryData({
                     memoryUse: this._memoryUse,
+                    memorySwap: this._memorySwap,
                     memoryCache: this._memoryCache
                 }, memoryInfo);
             } catch (error) {
-                console.error('Error updating memory info:', error);
+                logError(error, 'System HUD: Error updating memory info');
                 updateMemoryData({
                     memoryUse: this._memoryUse,
+                    memorySwap: this._memorySwap,
                     memoryCache: this._memoryCache
                 }, null);
             }
+        }
+    }
+
+    async _updateOSInfo() {
+        if (!this._device_OS || !this._device_Kernel)
+            return;
+
+        try {
+            const systemInfo = await this._systemLink.getSystemInfo();
+            this._osDetails = systemInfo;
+            updateOSData({
+                device_OS: this._device_OS,
+                device_Kernel: this._device_Kernel
+            }, systemInfo);
+        } catch (error) {
+            logError(error, 'System HUD: Error updating system info');
+            this._osDetails = null;
+            this._device_OS.text = 'OS : Unknown';
+            this._device_Kernel.text = 'Kernel : Unknown';
         }
     }
 
@@ -988,7 +1046,7 @@ export class UIManager {
                 const powerInfo = await this._systemLink.getPowerInfo();
                 updatePowerData({ powerShow: this._powerShow }, powerInfo);
             } catch (error) {
-                console.error('Error updating power info:', error);
+                logError(error, 'System HUD: Error updating power info');
                 updatePowerData({ powerShow: this._powerShow }, null);
             }
         }
@@ -1003,16 +1061,20 @@ export class UIManager {
 
     async _updateAllInfo() {
         if (!this._main_screen) return;
-        // Run updates in parallel and tolerate individual failures
-        await Promise.allSettled([
-            this._updateDeviceInfo(),
-            this._updateNetworkInfo(),
-            this._updateMemoryInfo(),
-            this._updateStorageInfo(),
-            this._updatePowerInfo(),
-            this._updateCPUInfo(),
-            this._updateGPUInfo()
-        ]);
+        const now = Date.now();
+        const sections = ['device', 'network', 'memory', 'os', 'storage', 'power', 'cpu', 'gpu'];
+        const tasks = [];
+
+        for (const section of sections) {
+            if (!this._shouldRefreshSection(section, now))
+                continue;
+
+            this._markSectionRefreshed(section, now);
+            tasks.push(this._runSectionUpdate(section));
+        }
+
+        if (tasks.length > 0)
+            await Promise.allSettled(tasks);
     }
 
 
@@ -1048,10 +1110,29 @@ export class UIManager {
             GLib.source_remove(this._updateTimeoutId);
             this._updateTimeoutId = null;
         }
+
+        if (this._sectionRefreshTimeoutIds) {
+            this._sectionRefreshTimeoutIds.forEach(id => GLib.source_remove(id));
+            this._sectionRefreshTimeoutIds = [];
+        }
+
+        this._nextRefreshAt = {};
     }
 
     destroy() {
         this.destroyMainScreen();
+
+        if (this._settings) {
+            for (const id of this._settingsSignalIds) {
+                try {
+                    this._settings.disconnect(id);
+                } catch (e) {
+                    // ignore disconnect errors
+                }
+            }
+            this._settingsSignalIds = [];
+            this._settings = null;
+        }
         
         if (this._themeManager) {
             this._themeManager.disconnectThemeChanged(this._themeChangeSignal);
@@ -1067,6 +1148,16 @@ export class UIManager {
         if (this._labelTimeoutIds) {
             this._labelTimeoutIds.forEach(id => GLib.source_remove(id));
             this._labelTimeoutIds = [];
+        }
+
+        if (this._sectionRefreshTimeoutIds) {
+            this._sectionRefreshTimeoutIds.forEach(id => GLib.source_remove(id));
+            this._sectionRefreshTimeoutIds = [];
+        }
+
+        if (this._osHoverTimeoutId) {
+            GLib.source_remove(this._osHoverTimeoutId);
+            this._osHoverTimeoutId = null;
         }
     }
 }

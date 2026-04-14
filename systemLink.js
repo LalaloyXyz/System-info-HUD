@@ -53,7 +53,7 @@ export class SystemLink {
                 uptime: uptime
             };
         } catch (error) {
-            console.error('Error getting all system info:', error);
+            logError(error, 'System HUD: Error getting all system info');
             return { error: 'Failed to get system information' };
         }
     }
