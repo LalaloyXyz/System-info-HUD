@@ -222,10 +222,12 @@ export class CPUModule extends BaseModule {
             }
     
             const result = [];
+            const coreDetails = [];
             for (let i = 0; i < coreCount; i++) {
                 const coreName = `Core-${String(i).padStart(2, '0')}    |`;
                 const speed = coreSpeeds[i] || 0;
-                const coreload = String(Math.round((coreSpeeds[i] / cpumax) * 100)).padStart(2, '0');
+                const loadPercent = cpumax > 0 ? Math.round((coreSpeeds[i] / cpumax) * 100) : 0;
+                const coreload = String(loadPercent).padStart(2, '0');
                 const physicalCoreId = processorToCoreMap[i] || "0";
                 const temp = coreTemps[physicalCoreId] || "N/A";
                 
@@ -241,12 +243,21 @@ export class CPUModule extends BaseModule {
                     result.push(`${speedEmoji} ${coreName}       ${speedStr}   ${tempStr}`);
                 else 
                     result.push(`${speedEmoji} ${coreName}     ${speedStr}    ${tempStr}`);
+
+                coreDetails.push({
+                    index: i,
+                    name: `Core-${String(i).padStart(2, '0')}`,
+                    speed,
+                    load: loadPercent,
+                    temp
+                });
             }
     
             const finalResult = {
                 cpu: modelName,
                 core: coreCount,
-                coreSpeeds: result
+                coreSpeeds: result,
+                coreDetails
             };
     
             this._updateCache(finalResult);

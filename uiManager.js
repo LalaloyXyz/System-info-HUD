@@ -59,6 +59,7 @@ export class UIManager {
         this._labelTimeoutIds = []; // Track label animation timeouts
         this._updateInProgress = false; // prevent overlapping updates
         this._mainScreenKeyPressId = null;
+        this._indicatorClickSignalId = null;
         this._applyRefreshInterval(this._refreshIntervalMs);
 
         try {
@@ -235,15 +236,33 @@ export class UIManager {
         });
         this._labelTimeoutIds.push(typingId);
 
-        this._indicator.connect('button-press-event', () => {
-            if (this._main_screen) {
-                this.destroyMainScreen();
-            } else {
-                this.showMainScreen();
-            }
+        // GNOME 49+ St.Button uses ClutterClickGesture internally, which can
+        // consume press/release events before extension handlers see them.
+        if (this._indicator.clear_actions)
+            this._indicator.clear_actions();
+
+        this._indicatorClickSignalId = this._indicator.connect('button-press-event', (_actor, event) => {
+            if (event.get_button && event.get_button() !== 1)
+                return Clutter.EVENT_PROPAGATE;
+
+            this._toggleMainScreenFromIndicator();
+            return Clutter.EVENT_STOP;
         });
 
         Main.panel.addToStatusArea(this._extension.uuid, this._indicator);
+    }
+
+    _toggleMainScreenFromIndicator() {
+        if (this._indicator.menu.isOpen)
+            this._indicator.menu.close();
+
+        if (this._main_screen) {
+            this._indicator.remove_style_class_name('active');
+            this.destroyMainScreen();
+        } else {
+            this._indicator.add_style_class_name('active');
+            this.showMainScreen();
+        }
     }
 
     _updateThemeColors() {
@@ -473,7 +492,7 @@ export class UIManager {
             { height: Math.floor(popupHeight * 0.12), type: 'network' },
             { height: Math.floor(popupHeight * 0.025), type: 'space' },
             { height: Math.floor(popupHeight * 0.12), type: 'memory' },
-            { height: Math.floor(popupHeight * 0.030), type: 'space' },
+            { height: Math.floor(popupHeight * 0.025), type: 'space' },
             { height: Math.floor(popupHeight * 0.24), type: 'storage' },
             { height: Math.floor(popupHeight * 0.005), type: 'space' },
             { height: Math.floor(popupHeight * 0.1), type: 'power' }
@@ -511,8 +530,8 @@ export class UIManager {
             { height: Math.floor(popupHeight * 0.12), type: 'space' },
             { height: Math.floor(popupHeight * 0.10), type: 'os' },
             { height: Math.floor(popupHeight * 0.06), type: 'space' },
-            { height: Math.floor(popupHeight * 0.35), type: 'cpu' },
-            { height: Math.floor(popupHeight * 0.045), type: 'space' },
+            { height: Math.floor(popupHeight * 0.38), type: 'cpu' },
+            { height: Math.floor(popupHeight * 0.044), type: 'space' },
             { height: Math.floor(popupHeight * 0.22), type: 'gpu' }
         ];
 
@@ -774,22 +793,18 @@ export class UIManager {
             text: 'Memory',
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
-        this._memoryUse = new St.Label({
-            text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+        this._memoryBox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            y_expand: false
         });
-        this._memorySwap = new St.Label({
+        this._memoryBox.add_child(new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 10px;`
-        });
-        this._memoryCache = new St.Label({
-            text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 10px;`
-        });
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+            x_expand: true
+        }));
         column.add_child(this._memoryHead);
-        column.add_child(this._memoryUse);
-        column.add_child(this._memorySwap);
-        column.add_child(this._memoryCache);
+        column.add_child(this._memoryBox);
         this._queueSectionRefresh('memory', 100);
     }
 
@@ -828,12 +843,19 @@ export class UIManager {
             text: 'Power',
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
+        this._powerBox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            y_expand: false
+        });
         this._powerShow = new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+            x_expand: true
         });
+        this._powerBox.add_child(this._powerShow);
         column.add_child(this._powerHead);
-        column.add_child(this._powerShow);
+        column.add_child(this._powerBox);
         this._queueSectionRefresh('power', 150);
     }
 
@@ -995,21 +1017,25 @@ export class UIManager {
     }
 
     async _updateMemoryInfo() {
-        if (this._memoryUse && this._memoryCache) {
+        if (this._memoryBox || (this._memoryUse && this._memoryCache)) {
             try {
                 const memoryInfo = await this._systemLink.getMemoryInfo();
+                const themeColors = this._updateThemeColors();
                 updateMemoryData({
+                    memoryBox: this._memoryBox,
                     memoryUse: this._memoryUse,
                     memorySwap: this._memorySwap,
                     memoryCache: this._memoryCache
-                }, memoryInfo);
+                }, memoryInfo, themeColors, St);
             } catch (error) {
                 logError(error, 'System HUD: Error updating memory info');
+                const themeColors = this._updateThemeColors();
                 updateMemoryData({
+                    memoryBox: this._memoryBox,
                     memoryUse: this._memoryUse,
                     memorySwap: this._memorySwap,
                     memoryCache: this._memoryCache
-                }, null);
+                }, null, themeColors, St);
             }
         }
     }
@@ -1036,18 +1062,27 @@ export class UIManager {
     async _updateStorageInfo() {
         if (this._storageBox) {
             const storageInfo = await this._systemLink.getStorageInfo();
-            updateStorageData({ storageBox: this._storageBox }, storageInfo, St);
+            const themeColors = this._updateThemeColors();
+            updateStorageData({ storageBox: this._storageBox }, storageInfo, themeColors, St);
         }
     }
 
     async _updatePowerInfo() {
-        if (this._powerShow) {
+        if (this._powerShow || this._powerBox) {
             try {
                 const powerInfo = await this._systemLink.getPowerInfo();
-                updatePowerData({ powerShow: this._powerShow }, powerInfo);
+                const themeColors = this._updateThemeColors();
+                updatePowerData({
+                    powerBox: this._powerBox,
+                    powerShow: this._powerShow
+                }, powerInfo, themeColors, St);
             } catch (error) {
                 logError(error, 'System HUD: Error updating power info');
-                updatePowerData({ powerShow: this._powerShow }, null);
+                const themeColors = this._updateThemeColors();
+                updatePowerData({
+                    powerBox: this._powerBox,
+                    powerShow: this._powerShow
+                }, null, themeColors, St);
             }
         }
     }
@@ -1055,7 +1090,8 @@ export class UIManager {
     async _updateCPUInfo() {
         if (this._coreBox) {
             const cpuInfo = await this._systemLink.getCPUInfo();
-            updateCPUData({ cpuName: this._cpuName, coreBox: this._coreBox }, cpuInfo, St);
+            const themeColors = this._updateThemeColors();
+            updateCPUData({ cpuName: this._cpuName, coreBox: this._coreBox }, cpuInfo, themeColors, St);
         }
     }
 
@@ -1140,6 +1176,14 @@ export class UIManager {
         }
         
         if (this._indicator) {
+            if (this._indicatorClickSignalId) {
+                try {
+                    this._indicator.disconnect(this._indicatorClickSignalId);
+                } catch (e) {
+                    // ignore disconnect errors
+                }
+                this._indicatorClickSignalId = null;
+            }
             this._indicator.destroy();
             this._indicator = null;
         }

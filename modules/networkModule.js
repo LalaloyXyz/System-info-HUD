@@ -105,14 +105,15 @@ export class NetworkModule extends BaseModule {
             ]);
 
             const now = Date.now();
-            const publicIP = this._getCachedPublicIP(now) || (this._cacheData.publicIP.data || 'Fetching…');
+            const publicIP = this._getCachedPublicIP(now) || (this._cacheData.publicIP.data || '…');
             this._ensurePublicIPRefresh(now);
 
             const result = {
                 lanIP,
                 publicIP,
                 wifiSSID,
-                networkSpeed
+                networkSpeed,
+                wifiToolMissing: await this._isWifiToolMissing()
             };
 
             this._updateCache(result);
@@ -244,6 +245,16 @@ export class NetworkModule extends BaseModule {
             timestamp: now
         };
         return finalSsid;
+    }
+
+    async _isWifiToolMissing() {
+        const [hasIwgetid, hasNmcli, hasIw] = await Promise.all([
+            this._hasExecutable('iwgetid'),
+            this._hasExecutable('nmcli'),
+            this._hasExecutable('iw')
+        ]);
+
+        return !hasIwgetid && !hasNmcli && !hasIw;
     }
 
     async getNetworkSpeed() {
