@@ -4,8 +4,8 @@
 
 # System Info HUD
 
-**A modern GNOME Shell extension that shows live system stats in a clean ui**  
-Designed to work across most Linux distributions and hardware platforms — Intel, AMD, and ARM.
+**A modern GNOME Shell extension that shows live system stats in a clean UI**  
+Designed to work across most Linux distributions.
 
 <br/>
 
