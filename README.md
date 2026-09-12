@@ -18,6 +18,10 @@
   <img src="https://img.shields.io/badge/View%20on-GitHub-181717?style=for-the-badge&logo=github">
 </a>
 
+<a href="https://extensions.gnome.org/extension/8183/system-hud/">
+  <img src="https://img.shields.io/badge/Download-GNOME%20Extensions-4A86CF?style=for-the-badge">
+</a>
+
 <a href="https://buymeacoffee.com/banditpetsw">
   <img src="https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-orange?style=for-the-badge">
 </a>
