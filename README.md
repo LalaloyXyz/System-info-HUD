@@ -14,10 +14,6 @@
 
 <br>
 
-<a href="https://github.com/LalaloyXyz/System-info-HUD">
-  <img src="https://img.shields.io/badge/View%20on-GitHub-181717?style=for-the-badge&logo=github">
-</a>
-
 <a href="https://extensions.gnome.org/extension/8183/system-hud/">
   <img src="https://img.shields.io/badge/Download-GNOME%20Extensions-4A86CF?style=for-the-badge">
 </a>
@@ -172,9 +168,4 @@ Feel free to open an issue or submit a pull request on [GitHub](https://github.c
 ## 📄 License
 
 System Info HUD is free software distributed under the [GNU General Public License v3.0](LICENSE).
-
-<div align="center">
-
-Made with ❤️
-
 </div>
