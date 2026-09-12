@@ -140,10 +140,7 @@ export class UIManager {
             this._updateInProgress = true;
             this._updateAllInfo()
                 .catch(e => {
-                    try {
-                        logError(e, 'System HUD: Error updating HUD');
-                    } catch (_) {
-                    }
+                    logError(e, 'System HUD: Error updating HUD');
                 })
                 .finally(() => {
                     this._updateInProgress = false;
@@ -548,8 +545,8 @@ export class UIManager {
         // Populate UI components asynchronously so they don't block the entrance animation
         this._createBackColumn(backColumn, popupHeight); // synchronous
         // Start population in background (parallel, not blocking entrance animation)
-        this._createLeftColumn(leftColumn, popupHeight).catch((e) => { try { log(e); } catch(_){} });
-        this._createRightColumn(rightColumn, popupHeight).catch((e) => { try { log(e); } catch(_){} });
+        this._createLeftColumn(leftColumn, popupHeight).catch(e => log(e));
+        this._createRightColumn(rightColumn, popupHeight).catch(e => log(e));
 
         this._restartUpdateLoop();
     }
@@ -1252,11 +1249,7 @@ export class UIManager {
 
         if (this._settings) {
             for (const id of this._settingsSignalIds) {
-                try {
-                    this._settings.disconnect(id);
-                } catch (e) {
-                    // ignore disconnect errors
-                }
+                this._settings.disconnect(id);
             }
             this._settingsSignalIds = [];
             this._settings = null;
@@ -1269,19 +1262,11 @@ export class UIManager {
         
         if (this._indicator) {
             if (this._indicatorClickSignalId) {
-                try {
-                    this._indicator.disconnect(this._indicatorClickSignalId);
-                } catch (e) {
-                    // ignore disconnect errors
-                }
+                this._indicator.disconnect(this._indicatorClickSignalId);
                 this._indicatorClickSignalId = null;
             }
             if (this._indicatorTouchSignalId) {
-                try {
-                    this._indicator.disconnect(this._indicatorTouchSignalId);
-                } catch (e) {
-                    // ignore disconnect errors
-                }
+                this._indicator.disconnect(this._indicatorTouchSignalId);
                 this._indicatorTouchSignalId = null;
             }
             this._indicator.destroy();

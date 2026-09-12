@@ -52,11 +52,7 @@ export class ThemeManager {
         // If no handlers left, disconnect the Gio.Settings signal
         const anyRemaining = this._themeChangedHandlers.some(h => !!h);
         if (!anyRemaining && this._settingsSignalId !== null) {
-            try {
-                this._themeSettings.disconnect(this._settingsSignalId);
-            } catch (e) {
-                // ignore disconnect errors
-            }
+            this._themeSettings.disconnect(this._settingsSignalId);
             this._settingsSignalId = null;
         }
     }
