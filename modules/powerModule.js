@@ -13,7 +13,14 @@ export class PowerModule extends BaseModule {
         try {
             // First get the battery device path
             const batteryList = await this._executeCommand(['upower', '-e']);
-            const batteryPath = batteryList.split('\n').find(line => line.includes('BAT'));
+            const batteryPaths = batteryList
+                .split('\n')
+                .map(line => line.trim())
+                .filter(Boolean);
+            // Prefer the laptop battery over Bluetooth/HID batteries, which
+            // can also appear in `upower -e` and report a different state.
+            const batteryPath = batteryPaths.find(line => /\/battery_BAT\d+$/i.test(line))
+                || batteryPaths.find(line => /\/battery_/i.test(line));
             
             if (!batteryPath) {
                 return "No battery found";
@@ -26,22 +33,25 @@ export class PowerModule extends BaseModule {
             let wattage = "";
             let time = "";
 
-            let stateMatch = output.match(/state:\s+(\w+)/i);
+            let stateMatch = output.match(/^\s*state:\s*([a-z-]+)/im);
             if (stateMatch && stateMatch[1]) {
-                state = stateMatch[1].charAt(0).toUpperCase() + stateMatch[1].slice(1);
+                state = stateMatch[1].toLowerCase()
+                    .split('-')
+                    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+                    .join(' ');
             }
 
-            let percentMatch = output.match(/percentage:\s+(\d+(\.\d+)?)%/i);
+            let percentMatch = output.match(/^\s*percentage:\s*(\d+(\.\d+)?)%/im);
             if (percentMatch && percentMatch[1]) {
                 percentage = parseFloat(percentMatch[1]).toFixed(1);
             }
 
-            let rateMatch = output.match(/energy-rate:\s+(\d+(\.\d+)?)\s+W/i);
+            let rateMatch = output.match(/^\s*energy-rate:\s*(\d+(\.\d+)?)\s*W/im);
             if (rateMatch && rateMatch[1]) {
                 wattage = parseFloat(rateMatch[1]).toFixed(2);
             }
 
-            let timeMatch = output.match(/time to (empty|full):\s+(.+)/i);
+            let timeMatch = output.match(/^\s*time to (empty|full):\s*(.+)$/im);
             if (timeMatch) {
                 time = timeMatch[2].trim();
             }

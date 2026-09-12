@@ -1,6 +1,9 @@
 // updateData.js
 // Efficient, dynamic UI update logic for all sections
 
+import Clutter from 'gi://Clutter';
+import Cairo from 'cairo';
+
 const DETAIL_LABEL_STYLE = 'font-weight: bold; font-size: 11px;';
 const HELP_LABEL_STYLE = 'font-weight: bold; font-size: 10px;';
 
@@ -60,6 +63,18 @@ function getGreenToRedColor(value, thresholds) {
     return '#28be4b';
 }
 
+function getBatteryColor(percent, state) {
+    if (/full/i.test(state || '') || percent >= 80)
+        return '#28be4b';
+    if (percent >= 50)
+        return '#a8d64a';
+    if (percent >= 25)
+        return '#ffcc33';
+    if (percent >= 15)
+        return '#ff9f45';
+    return '#ff5f57';
+}
+
 const ACCENT_COLORS = {
     blue: '#64d2ff',
     cyan: '#5ee7df',
@@ -70,6 +85,30 @@ const ACCENT_COLORS = {
     purple: '#b99cff',
     pink: '#ff8bd1'
 };
+
+const CORE_GRAPH_COLORS = [
+    [0.58, 0.30, 0.95],
+    [0.35, 0.25, 0.95],
+    [0.25, 0.48, 1.0],
+    [0.22, 0.72, 1.0],
+    [0.20, 0.90, 0.88],
+    [0.18, 0.82, 0.55],
+    [0.45, 0.88, 0.25],
+    [0.78, 0.92, 0.18],
+    [1.0, 0.82, 0.18],
+    [1.0, 0.60, 0.12],
+    [1.0, 0.38, 0.16],
+    [0.95, 0.16, 0.28]
+];
+
+function getCoreGraphColor(index) {
+    return CORE_GRAPH_COLORS[index % CORE_GRAPH_COLORS.length];
+}
+
+function getCoreGraphCssColor(index) {
+    const [red, green, blue] = getCoreGraphColor(index);
+    return `rgb(${Math.round(red * 255)}, ${Math.round(green * 255)}, ${Math.round(blue * 255)})`;
+}
 
 function clearBox(box) {
     for (const child of box.get_children())
@@ -87,16 +126,6 @@ function addCpuIndicator(row, color, St) {
     row.add_child(new St.Widget({
         style: `width: 8px; height: 8px; border-radius: 4px; background-color: ${color}; margin: 3px 6px 0 0;`
     }));
-}
-
-function addCpuLoadBar(row, load, color, St) {
-    const bar = new St.BoxLayout({
-        style: 'width: 54px; height: 6px; border-radius: 3px; background-color: rgba(255, 255, 255, 0.14); margin: 6px 8px 0 0;'
-    });
-    bar.add_child(new St.Widget({
-        style: `width: ${Math.max(3, Math.round(Math.min(load, 100) * 0.54))}px; height: 6px; border-radius: 3px; background-color: ${color};`
-    }));
-    row.add_child(bar);
 }
 
 function sectionTextColors(themeColors) {
@@ -138,7 +167,7 @@ function addMetricRow(box, { name, value, percent, detail, color, nameWidth = 54
     const { baseStyle, subtleStyle } = sectionTextColors(themeColors);
     const nameStyle = `color: ${color}; font-weight: bold; font-size: 10px;`;
     const row = new St.BoxLayout({
-        vertical: false,
+        orientation: Clutter.Orientation.HORIZONTAL,
         x_expand: true,
         style: 'padding: 3px 4px; margin-bottom: 3px; border-radius: 6px; background-color: rgba(255, 255, 255, 0.035);'
     });
@@ -225,32 +254,106 @@ function parsePowerInfo(powerInfo) {
     };
 }
 
-function setCPURows(coreBox, cpuInfo, themeColors, St) {
+function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St) {
+    const graph = new St.DrawingArea({
+        width: 280,
+        height: 110,
+        x_expand: true,
+        style: 'margin: 4px 0 8px; border-radius: 6px; background-color: rgba(255, 255, 255, 0.035);'
+    });
+
+    graph.connect('repaint', area => {
+        const cr = area.get_context();
+        const [width, height] = area.get_surface_size();
+        const left = 24;
+        const right = 8;
+        const top = 10;
+        const bottom = 18;
+        const plotWidth = Math.max(1, width - left - right);
+        const plotHeight = Math.max(1, height - top - bottom);
+        const currentValues = coreDetails.map(core => Math.max(0, Math.min(100, Number(core.load) || 0)));
+        const history = Array.isArray(loadHistory) && loadHistory.length > 0
+            ? loadHistory
+            : [currentValues];
+        const coreCount = Math.max(currentValues.length, ...history.map(sample => sample.length));
+
+        cr.setSourceRGBA(0.2, 0.2, 0.2, 0.18);
+        cr.rectangle(0, 0, width, height);
+        cr.fill();
+
+        cr.setLineWidth(1);
+        for (const level of [0, 50, 100]) {
+            const y = top + plotHeight - (level / 100) * plotHeight;
+            cr.setSourceRGBA(0.7, 0.7, 0.7, 0.22);
+            cr.moveTo(left, y);
+            cr.lineTo(width - right, y);
+            cr.stroke();
+            cr.setSourceRGBA(0.7, 0.7, 0.7, 0.75);
+            cr.setFontSize(9);
+            cr.moveTo(2, y + 3);
+            cr.showText(`${level}`);
+        }
+
+        if (coreCount === 0)
+            return;
+
+        const point = (sampleIndex, coreIndex) => {
+            const x = history.length === 1
+                ? left + plotWidth
+                : left + (sampleIndex / (history.length - 1)) * plotWidth;
+            const value = Math.max(0, Math.min(100, Number(history[sampleIndex]?.[coreIndex]) || 0));
+            const y = top + plotHeight - (value / 100) * plotHeight;
+            return [x, y];
+        };
+
+        cr.setLineWidth(2);
+        cr.setLineCap(Cairo.LineCap.ROUND);
+        for (let coreIndex = 0; coreIndex < coreCount; coreIndex++) {
+            const [red, green, blue] = getCoreGraphColor(coreIndex);
+            cr.moveTo(...point(0, coreIndex));
+            for (let sampleIndex = 1; sampleIndex < history.length; sampleIndex++)
+                cr.lineTo(...point(sampleIndex, coreIndex));
+            cr.setSourceRGB(red, green, blue);
+            cr.stroke();
+
+            const [x, y] = point(history.length - 1, coreIndex);
+            cr.arc(x, y, 2.5, 0, Math.PI * 2);
+            cr.fill();
+        }
+    });
+
+    coreBox.add_child(graph);
+}
+
+function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true) {
     clearBox(coreBox);
 
     const textColor = themeColors?.text || '#ffffff';
     const secondaryColor = themeColors?.secondaryText || textColor;
     const baseStyle = `color: ${textColor}; font-weight: bold; font-size: 11px;`;
-    const subtleStyle = `color: ${secondaryColor}; font-weight: bold; font-size: 10px;`;
+    const subtleStyle = `color: ${secondaryColor}; font-weight: bold; font-size: 11px;`;
 
-    for (const core of cpuInfo.coreDetails) {
+    if (showGraph)
+        addCPUGraph(coreBox, cpuInfo.coreDetails, cpuInfo.loadHistory, themeColors, St);
+
+    for (let coreIndex = 0; coreIndex < cpuInfo.coreDetails.length; coreIndex++) {
+        const core = cpuInfo.coreDetails[coreIndex];
         const load = Number.isFinite(core.load) ? core.load : 0;
         const tempNumber = parseFloat(core.temp);
-        const loadColor = getGreenToRedColor(load, {medium: 50, warm: 70, hot: 90 });
+        const loadColor = getCoreGraphCssColor(coreIndex);
         const tempColor = Number.isFinite(tempNumber)
             ? getGreenToRedColor(tempNumber, { medium: 50, warm: 70, hot: 80 })
             : secondaryColor;
 
         const row = new St.BoxLayout({
-            vertical: false,
+            orientation: Clutter.Orientation.HORIZONTAL,
             x_expand: true,
-            style: 'padding: 2px 0;'
+            style: `padding: 4px 5px; margin-bottom: 2px; border-radius: 5px; border-left: 3px solid ${loadColor}; background-color: rgba(255, 255, 255, 0.035);`
         });
 
         addCpuIndicator(row, loadColor, St);
-        addCpuCell(row, core.name, baseStyle, 50, St);
+        addCpuCell(row, core.name, `${baseStyle} color: ${loadColor};`, 50, St);
         addCpuCell(row, `${core.speed} MHz`, subtleStyle, 72, St);
-        addCpuLoadBar(row, load, loadColor, St);
         addCpuCell(row, `${load}%`, baseStyle, 34, St);
         addCpuIndicator(row, tempColor, St);
         addCpuCell(row, `Temp ${core.temp} °C`, baseStyle, 70, St);
@@ -278,7 +381,7 @@ function addGpuMetricRow(gpuBox, {
     const baseStyle = `color: ${textColor}; font-weight: bold; font-size: 11px;`;
     const subtleStyle = `color: ${secondaryColor}; font-weight: bold; font-size: 10px;`;
     const row = new St.BoxLayout({
-        vertical: false,
+        orientation: Clutter.Orientation.HORIZONTAL,
         x_expand: true,
         style: 'padding: 2px 0;'
     });
@@ -288,7 +391,7 @@ function addGpuMetricRow(gpuBox, {
     if (value)
         addCpuCell(row, value, subtleStyle, valueWidth, St);
     if (Number.isFinite(percent)) {
-        addCpuLoadBar(row, percent, color, St);
+        addMetricBar(row, percent, color, St);
         addCpuCell(row, `${Math.round(percent)}%`, baseStyle, percentWidth, St);
     }
     if (detail)
@@ -304,7 +407,7 @@ function addGpuDetailRow(gpuBox, details, themeColors, St) {
     const baseStyle = `color: ${textColor}; font-weight: bold; font-size: 11px;`;
     const subtleStyle = `color: ${secondaryColor}; font-weight: bold; font-size: 10px;`;
     const row = new St.BoxLayout({
-        vertical: false,
+        orientation: Clutter.Orientation.HORIZONTAL,
         x_expand: true,
         style: 'padding: 2px 0;'
     });
@@ -376,7 +479,7 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St) {
     }
 }
 
-export function updateCPUData({ cpuName, coreBox }, cpuInfo, themeColors, St) {
+export function updateCPUData({ cpuName, coreBox, showGraph = true }, cpuInfo, themeColors, St) {
     if (!St && themeColors?.Label) {
         St = themeColors;
         themeColors = null;
@@ -388,7 +491,7 @@ export function updateCPUData({ cpuName, coreBox }, cpuInfo, themeColors, St) {
     if (cpuName && cpuInfo)
         cpuName.text = `${cpuInfo.cpu} x ${cpuInfo.core}`;
     if (coreBox && cpuInfo && Array.isArray(cpuInfo.coreDetails)) {
-        setCPURows(coreBox, cpuInfo, themeColors, St);
+        setCPURows(coreBox, cpuInfo, themeColors, St, showGraph);
     } else if (coreBox && cpuInfo && cpuInfo.coreSpeeds) {
         const lines = cpuInfo.coreSpeeds.map(text => ({ text, style: labelStyle }));
         if (cpuInfo.cpu === 'Unknown CPU' || cpuInfo.core === 0)
@@ -465,6 +568,12 @@ export function updateMemoryData({ memoryBox, memoryUse, memorySwap, memoryCache
 
 export function updateNetworkData({ wifiSpeedLabel, publicIPLabel, localIPLabel }, networkInfo) {
     if (!networkInfo) return;
+    if (networkInfo.error) {
+        if (wifiSpeedLabel) wifiSpeedLabel.text = 'No internet';
+        if (publicIPLabel) publicIPLabel.text = 'No internet';
+        if (localIPLabel) localIPLabel.text = 'No internet';
+        return;
+    }
     if (wifiSpeedLabel) {
         const { networkSpeed, wifiSSID } = networkInfo;
         const download = networkSpeed?.download || '0';
@@ -472,7 +581,7 @@ export function updateNetworkData({ wifiSpeedLabel, publicIPLabel, localIPLabel 
         const ssid = networkInfo.wifiToolMissing ? TOOL_HELP.wifi : (wifiSSID || 'Unknown');
         wifiSpeedLabel.text = `${ssid} ↓ ${download} ↑ ${upload}`;
     }
-    if (publicIPLabel) publicIPLabel.text = networkInfo.publicIP || 'Unknown';
+    if (publicIPLabel) publicIPLabel.text = networkInfo.publicIP || 'No internet';
     if (localIPLabel) localIPLabel.text = networkInfo.lanIP === 'Unknown' ? TOOL_HELP.localIP : (networkInfo.lanIP || 'Unknown');
 }
 
@@ -524,10 +633,7 @@ export function updatePowerData({ powerBox, powerShow }, powerInfo, themeColors,
 
         const parsed = parsePowerInfo(powerInfo);
         if (parsed && Number.isFinite(parsed.percent)) {
-            const isFull = /full/i.test(parsed.state || '') || parsed.percent >= 85;
-            const powerColor = isFull
-                ? '#28be4b'
-                : getGreenToRedColor(parsed.percent, { medium: 60, warm: 30, hot: 20 });
+            const powerColor = getBatteryColor(parsed.percent, parsed.state);
             addGpuMetricRow(powerBox, {
                 name: parsed.state || 'Battery',
                 // keep a spacer before the bar so status and bar are less cramped

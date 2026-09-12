@@ -6,6 +6,7 @@ export class CPUModule extends BaseModule {
         this._networkInterface = { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 };
         // cache results of which/executable checks to avoid repeating them
         this._execCache = {};
+        this._cpuStatSnapshot = null;
     }
 
     // cache-check helper for executables
@@ -21,6 +22,44 @@ export class CPUModule extends BaseModule {
             return false;
         }
     }
+
+    async _getCoreLoads() {
+        const statText = await this._readFile('/proc/stat');
+        const nextSnapshot = new Map();
+
+        for (const line of statText.split('\n')) {
+            const match = line.match(/^cpu(\d+)\s+(.*)$/);
+            if (!match)
+                continue;
+
+            const values = match[2].trim().split(/\s+/).map(Number);
+            if (values.length < 5 || values.some(value => !Number.isFinite(value)))
+                continue;
+
+            // Use the first eight fields. Guest time is already included in user time.
+            const idle = values[3] + values[4];
+            const total = values.slice(0, 8).reduce((sum, value) => sum + value, 0);
+            nextSnapshot.set(Number(match[1]), { idle, total });
+        }
+
+        const loads = [];
+        for (const [index, current] of nextSnapshot) {
+            const previous = this._cpuStatSnapshot?.get(index);
+            if (!previous) {
+                loads[index] = 0;
+                continue;
+            }
+
+            const totalDelta = current.total - previous.total;
+            const idleDelta = current.idle - previous.idle;
+            loads[index] = totalDelta > 0
+                ? Math.round(Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100)))
+                : 0;
+        }
+
+        this._cpuStatSnapshot = nextSnapshot;
+        return loads;
+    }
     
     async getCPUInfo() {
         if (this._isCacheValid()) {
@@ -28,6 +67,8 @@ export class CPUModule extends BaseModule {
         }
 
         try {
+            const coreLoads = await this._getCoreLoads();
+
             // Get CPU info using lscpu if available, else fallback to /proc/cpuinfo
             let lscpuText = '';
             const hasLscpu = await this._hasExecutable('lscpu');
@@ -226,12 +267,12 @@ export class CPUModule extends BaseModule {
             for (let i = 0; i < coreCount; i++) {
                 const coreName = `Core-${String(i).padStart(2, '0')}    |`;
                 const speed = coreSpeeds[i] || 0;
-                const loadPercent = cpumax > 0 ? Math.round((coreSpeeds[i] / cpumax) * 100) : 0;
+                const loadPercent = coreLoads[i] ?? 0;
                 const coreload = String(loadPercent).padStart(2, '0');
                 const physicalCoreId = processorToCoreMap[i] || "0";
                 const temp = coreTemps[physicalCoreId] || "N/A";
                 
-                const speedEmoji = this._getStatusEmoji(coreload, [90, 70, 50, 30]);
+                const speedEmoji = this._getStatusEmoji(loadPercent, [90, 70, 50, 30]);
 
                 const tempNum = parseFloat(temp);
                 const tempEmoji = this._getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);

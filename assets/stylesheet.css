@@ -1,9 +1,14 @@
 .custom-scroll StScrollBar {
-    background-color: rgba(255, 255, 255, 0.1);
-    margin-right: 25px;
+    background-color: rgba(255, 255, 255, 0.06);
+    margin: 4px 18px 4px 0;
+    border-radius: 6px;
 }
 
 .custom-scroll StScrollBar StBin {
-    background-color: rgba(255, 255, 255, 0.2);
-    border-radius: 10px;
+    background-color: rgba(255, 255, 255, 0.34);
+    border-radius: 6px;
+}
+
+.custom-scroll StScrollBar StBin:hover {
+    background-color: rgba(255, 255, 255, 0.52);
 }

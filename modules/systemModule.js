@@ -27,16 +27,29 @@ export class SystemModule extends BaseModule {
             logError(e, 'System HUD: Failed to read /etc/os-release');
         }
 
-        const osType = GLib.SIZEOF_VOID_P === 8 ? 
-            (GLib.getenv('PROCESSOR_ARCHITECTURE')?.includes('arm') ? 'ARM64' : 'x86_64') : 
-            (GLib.getenv('PROCESSOR_ARCHITECTURE')?.includes('arm') ? 'ARM' : 'x86');
-        
         let kernelVersion = 'Unknown Kernel';
         try {
             kernelVersion = await this._executeCommand(['uname', '-r']);
             kernelVersion = kernelVersion.trim();
         } catch (e) {
             logError(e, 'System HUD: Failed to get kernel version');
+        }
+
+        let osType = 'Unknown';
+        try {
+            const architecture = (await this._executeCommand(['uname', '-m'])).trim().toLowerCase();
+            if (/^(aarch64|arm64)$/.test(architecture))
+                osType = 'ARM64';
+            else if (/^arm/.test(architecture))
+                osType = 'ARM';
+            else if (/^(x86_64|amd64)$/.test(architecture))
+                osType = 'x86_64';
+            else if (/^(i[3-6]86|x86)$/.test(architecture))
+                osType = 'x86';
+            else if (architecture)
+                osType = architecture;
+        } catch (e) {
+            logError(e, 'System HUD: Failed to get system architecture');
         }
 
         // GNOME Shell version

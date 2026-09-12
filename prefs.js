@@ -96,5 +96,59 @@ export default class SystemHUDPreferences extends ExtensionPreferences {
         });
 
         behaviorGroup.add(refreshRow);
+
+        const displayGroup = new Adw.PreferencesGroup({
+            title: _('Display'),
+            description: _('Adjust the HUD size and visible monitoring details.'),
+        });
+        page.add(displayGroup);
+
+        const addPercentRow = (key, title, subtitle) => {
+            const row = new Adw.SpinRow({
+                title: _(title),
+                subtitle: _(subtitle),
+                adjustment: new Gtk.Adjustment({
+                    lower: 25,
+                    upper: 70,
+                    step_increment: 1,
+                    page_increment: 5,
+                    value: settings.get_int(key),
+                }),
+                digits: 0,
+            });
+            row.set_value(settings.get_int(key));
+
+            let updating = false;
+            row.connect('notify::value', spinRow => {
+                if (updating)
+                    return;
+                const value = Math.max(25, Math.min(70, Math.round(spinRow.get_value())));
+                if (settings.get_int(key) !== value)
+                    settings.set_int(key, value);
+            });
+            settings.connect(`changed::${key}`, () => {
+                updating = true;
+                row.set_value(settings.get_int(key));
+                updating = false;
+            });
+            displayGroup.add(row);
+        };
+
+        addPercentRow('window-width-percent', 'HUD width', 'Width as a percentage of the primary monitor.');
+        addPercentRow('window-height-percent', 'HUD height', 'Height as a percentage of the primary monitor.');
+
+        const powerRow = new Adw.SwitchRow({
+            title: _('Show power section'),
+            subtitle: _('Display battery charge, power use and remaining time.'),
+        });
+        settings.bind('show-power-section', powerRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        displayGroup.add(powerRow);
+
+        const graphRow = new Adw.SwitchRow({
+            title: _('Show CPU graph'),
+            subtitle: _('Display the per-core CPU history graph.'),
+        });
+        settings.bind('show-cpu-graph', graphRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        displayGroup.add(graphRow);
     }
 }

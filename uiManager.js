@@ -56,16 +56,28 @@ export class UIManager {
         this._settingsSignalIds = [];
         this._useAnimation = true; // Default: use animation
         this._showCopyButton = true; // Default: show copy button
+        this._showPowerSection = true;
+        this._showCpuGraph = true;
+        this._popupWidthPercent = 40;
+        this._popupHeightPercent = 40;
         this._labelTimeoutIds = []; // Track label animation timeouts
         this._updateInProgress = false; // prevent overlapping updates
+        this._cpuLoadHistory = [];
+        this._lastCPUInfo = null;
         this._mainScreenKeyPressId = null;
         this._indicatorClickSignalId = null;
+        this._indicatorTouchSignalId = null;
+        this._lastIndicatorActivation = 0;
         this._applyRefreshInterval(this._refreshIntervalMs);
 
         try {
             this._settings = this._extension.getSettings();
             this._useAnimation = this._settings.get_boolean('enable-animations');
             this._showCopyButton = this._settings.get_boolean('show-copy-button');
+            this._showPowerSection = this._settings.get_boolean('show-power-section');
+            this._showCpuGraph = this._settings.get_boolean('show-cpu-graph');
+            this._popupWidthPercent = this._settings.get_int('window-width-percent');
+            this._popupHeightPercent = this._settings.get_int('window-height-percent');
             this._applyRefreshInterval(this._settings.get_int('refresh-interval-ms'));
             this._settingsSignalIds.push(this._settings.connect('changed::enable-animations', () => {
                 this._useAnimation = this._settings.get_boolean('enable-animations');
@@ -77,6 +89,21 @@ export class UIManager {
             }));
             this._settingsSignalIds.push(this._settings.connect('changed::refresh-interval-ms', () => {
                 this._applyRefreshInterval(this._settings.get_int('refresh-interval-ms'));
+            }));
+            this._settingsSignalIds.push(this._settings.connect('changed::show-power-section', () => {
+                this._showPowerSection = this._settings.get_boolean('show-power-section');
+                if (this._powerSection)
+                    this._powerSection.visible = this._showPowerSection;
+            }));
+            this._settingsSignalIds.push(this._settings.connect('changed::show-cpu-graph', () => {
+                this._showCpuGraph = this._settings.get_boolean('show-cpu-graph');
+                this._queueSectionRefresh('cpu', 0);
+            }));
+            this._settingsSignalIds.push(this._settings.connect('changed::window-width-percent', () => {
+                this._popupWidthPercent = this._settings.get_int('window-width-percent');
+            }));
+            this._settingsSignalIds.push(this._settings.connect('changed::window-height-percent', () => {
+                this._popupHeightPercent = this._settings.get_int('window-height-percent');
             }));
         } catch (e) {
             // Missing schemas/gschemas.compiled during development is non-fatal:
@@ -245,6 +272,22 @@ export class UIManager {
             if (event.get_button && event.get_button() !== 1)
                 return Clutter.EVENT_PROPAGATE;
 
+            if (Date.now() - this._lastIndicatorActivation < 300)
+                return Clutter.EVENT_STOP;
+
+            this._lastIndicatorActivation = Date.now();
+            this._toggleMainScreenFromIndicator();
+            return Clutter.EVENT_STOP;
+        });
+
+        this._indicatorTouchSignalId = this._indicator.connect('touch-event', (_actor, event) => {
+            if (event.type && event.type() !== Clutter.EventType.TOUCH_BEGIN)
+                return Clutter.EVENT_PROPAGATE;
+
+            if (Date.now() - this._lastIndicatorActivation < 300)
+                return Clutter.EVENT_STOP;
+
+            this._lastIndicatorActivation = Date.now();
             this._toggleMainScreenFromIndicator();
             return Clutter.EVENT_STOP;
         });
@@ -261,7 +304,12 @@ export class UIManager {
             this.destroyMainScreen();
         } else {
             this._indicator.add_style_class_name('active');
-            this.showMainScreen();
+            this.showMainScreen().catch(error => {
+                logError(error, 'System HUD: failed to open HUD');
+                this._indicator.remove_style_class_name('active');
+                if (this._main_screen)
+                    this.destroyMainScreen();
+            });
         }
     }
 
@@ -276,8 +324,9 @@ export class UIManager {
             // Update main screen style
             this._main_screen.style = `
                 background-color: ${themeColors.background};
-                border: 2px solid ${themeColors.accent};
-                border-radius: 20px 5px 20px 20px;
+                border: 1px solid ${themeColors.accent};
+                border-radius: 18px;
+                box-shadow: 0 18px 45px rgba(0, 0, 0, 0.42);
             `;
 
             this._profileBin.style =  `
@@ -285,17 +334,18 @@ export class UIManager {
                 background-size: cover;
                 background-position: center;
                 border-radius: 360px;
-                border: 3px solid ${themeColors.accent};
+                border: 2px solid ${themeColors.accent};
             `;
 
             if (this._closeButton) {
                 this._closeButton.style = `background-color: #f44336;
                     color: white; 
-                    width: 35px;
-                    height: 35px; 
-                    border-radius: 5px; 
-                    border: 2px solid ${themeColors.accent};
-                    font-weight: bold;`;
+                    width: 34px;
+                    height: 34px; 
+                    border-radius: 8px; 
+                    border: 1px solid rgba(255, 255, 255, 0.24);
+                    font-weight: bold;
+                    font-size: 14px;`;
             }
 
             updateDeviceSectionStyle({
@@ -345,7 +395,7 @@ export class UIManager {
         const themeColors = this._updateThemeColors();
         
         const column = new St.BoxLayout({
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             style: `background-color: transparent; border: 0px solid ${themeColors.accent};`,
             reactive: true,
             can_focus: true,
@@ -356,6 +406,21 @@ export class UIManager {
         if (height) column.set_height(height);
         
         return column;
+    }
+
+    _withSectionIcon(label, iconName) {
+        const row = new St.BoxLayout({
+            orientation: Clutter.Orientation.HORIZONTAL,
+            y_align: Clutter.ActorAlign.CENTER,
+            style: 'spacing: 7px;'
+        });
+        row.add_child(new St.Icon({
+            icon_name: iconName,
+            icon_size: 16,
+            style: 'color: white;'
+        }));
+        row.add_child(label);
+        return row;
     }
 
     _enableDrag(actor) {
@@ -400,15 +465,16 @@ export class UIManager {
     async showMainScreen() {
         const themeColors = this._updateThemeColors();
         const monitor = Main.layoutManager.primaryMonitor;
-        const popupWidth = Math.floor(monitor.width * 0.4);
-        const popupHeight = Math.floor(monitor.height * 0.4);
+        const popupWidth = Math.floor(monitor.width * this._popupWidthPercent / 100);
+        const popupHeight = Math.floor(monitor.height * this._popupHeightPercent / 100);
 
         this._main_screen = new St.BoxLayout({
-            vertical: false,
+            orientation: Clutter.Orientation.HORIZONTAL,
             style: `
             background-color: ${themeColors.background};
-            border: 2px solid ${themeColors.accent};
-            border-radius: 20px 5px 20px 20px;
+            border: 1px solid ${themeColors.accent};
+            border-radius: 18px;
+            box-shadow: 0 18px 45px rgba(0, 0, 0, 0.42);
             `,
             reactive: true,
             can_focus: true,
@@ -445,15 +511,20 @@ export class UIManager {
         });
 
         // Allow Esc to close the popup.
-        this._mainScreenKeyPressId = this._main_screen.connect('key-press-event', (_actor, event) => {
-            if (event.get_key_symbol() === Clutter.KEY_Escape) {
-                this._indicator.remove_style_class_name('active');
-                this.destroyMainScreen();
-                return Clutter.EVENT_STOP;
-            }
-            return Clutter.EVENT_PROPAGATE;
-        });
-        this._main_screen.grab_key_focus();
+        try {
+            this._mainScreenKeyPressId = this._main_screen.connect('key-press-event', (_actor, event) => {
+                if (event.get_key_symbol() === Clutter.KEY_Escape) {
+                    this._indicator.remove_style_class_name('active');
+                    this.destroyMainScreen();
+                    return Clutter.EVENT_STOP;
+                }
+                return Clutter.EVENT_PROPAGATE;
+            });
+            this._main_screen.grab_key_focus();
+        } catch (error) {
+            logError(error, 'System HUD: failed to bind Escape close shortcut');
+            this._mainScreenKeyPressId = null;
+        }
 
         // Compute position and play animation immediately
         const [_, natWidth] = this._main_screen.get_preferred_width(-1);
@@ -502,6 +573,12 @@ export class UIManager {
         const tasks = [];
         for (const section of sections) {
             const sectionColumn = this._createColumn(null, section.height);
+            if (section.type !== 'space')
+                sectionColumn.style = 'padding: 3px 0;';
+            if (section.type === 'power') {
+                this._powerSection = sectionColumn;
+                sectionColumn.visible = this._showPowerSection;
+            }
             column.add_child(sectionColumn);
             switch (section.type) {
                 case 'device':
@@ -539,6 +616,8 @@ export class UIManager {
         const tasks = [];
         for (const section of sections) {
             const sectionColumn = this._createColumn(null, section.height);
+            if (section.type !== 'space')
+                sectionColumn.style = 'padding: 3px 0;';
             column.add_child(sectionColumn);
             switch (section.type) {
                 case 'os':
@@ -561,7 +640,7 @@ export class UIManager {
 
         const themeColors = this._updateThemeColors();
         const buttonsRow = new St.BoxLayout({
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_align: Clutter.ActorAlign.END,
             x_expand: true,
             style: 'spacing: 6px;'
@@ -596,11 +675,12 @@ export class UIManager {
             const button = new St.Button({
                 style: `background-color: ${cfg.bg};
                         color: white;
-                        width: 35px; 
-                        height: 35px; 
-                        border-radius: 5px; 
-                        border: 2px solid ${themeColors.accent};
-                        font-weight: bold;`,
+                        width: 34px; 
+                        height: 34px; 
+                        border-radius: 8px; 
+                        border: 1px solid rgba(255, 255, 255, 0.24);
+                        font-weight: bold;
+                        font-size: 14px;`,
             });
             if (cfg.iconPath) {
                 button.set_child(new St.Icon({
@@ -683,7 +763,7 @@ export class UIManager {
         const avatarSize = Math.floor(column.height * 0.9);
 
         const profileRow = new St.BoxLayout({
-            vertical: false,
+            orientation: Clutter.Orientation.HORIZONTAL,
             x_align: Clutter.ActorAlign.START,
             y_align: Clutter.ActorAlign.CENTER,
             reactive: true,
@@ -699,7 +779,7 @@ export class UIManager {
                 background-size: cover;
                 background-position: center;
                 border-radius: 360px;
-                border: 3px solid ${themeColors.accent};
+                border: 2px solid ${themeColors.accent};
             `,
             clip_to_allocation: true,
         });
@@ -707,7 +787,7 @@ export class UIManager {
         profileRow.add_child(this._profileBin);
 
         const deviceInfoUser = new St.BoxLayout({
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_align: Clutter.ActorAlign.END,
             style: 'padding-left: 15px;',
@@ -719,7 +799,7 @@ export class UIManager {
         });
 
         const deviceNameRow = new St.BoxLayout({
-            vertical: false,
+            orientation: Clutter.Orientation.HORIZONTAL,
             x_align: Clutter.ActorAlign.START,
         });
 
@@ -752,13 +832,13 @@ export class UIManager {
             text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 13px;`
         });
-        const wifiRow = new St.BoxLayout({ vertical: false });
-        wifiRow.add_child(this._wifiLabel);
+        const wifiRow = new St.BoxLayout({ orientation: Clutter.Orientation.HORIZONTAL });
+        wifiRow.add_child(this._withSectionIcon(this._wifiLabel, 'network-wireless-symbolic'));
         wifiRow.add_child(this._wifiSpeedLabel);
         ipAndWiFi_LeftColumn.add_child(wifiRow);
         // ========== IP ADDRESSES ========== //
-        const publicipRow = new St.BoxLayout({ vertical: false });
-        const localipRow = new St.BoxLayout({ vertical: false });
+        const publicipRow = new St.BoxLayout({ orientation: Clutter.Orientation.HORIZONTAL });
+        const localipRow = new St.BoxLayout({ orientation: Clutter.Orientation.HORIZONTAL });
         // Public IP Label
         this._publicIPDescLabel = new St.Label({
             text: 'Public IP : ',
@@ -784,7 +864,7 @@ export class UIManager {
         ipAndWiFi_LeftColumn.add_child(publicipRow);
         ipAndWiFi_LeftColumn.add_child(localipRow);
         column.add_child(ipAndWiFi_LeftColumn);
-        this._queueSectionRefresh('network', 50);
+        this._queueSectionRefresh('network', 0);
     }
 
     async _createMemorySection(column) {
@@ -794,7 +874,7 @@ export class UIManager {
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         this._memoryBox = new St.BoxLayout({
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: false
         });
@@ -803,9 +883,9 @@ export class UIManager {
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
             x_expand: true
         }));
-        column.add_child(this._memoryHead);
+        column.add_child(this._withSectionIcon(this._memoryHead, 'memory-symbolic'));
         column.add_child(this._memoryBox);
-        this._queueSectionRefresh('memory', 100);
+        this._queueSectionRefresh('memory', 0);
     }
 
     async _createStorageSection(column) {
@@ -815,12 +895,12 @@ export class UIManager {
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         this._storageBox = new St.BoxLayout({
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: true
         });
         const storage_scrollView = new St.ScrollView({
-            style_class: './assets/custom-scroll',
+            style_class: 'custom-scroll',
             overlay_scrollbars: true,
             enable_mouse_scrolling: true,
             x_expand: true,
@@ -832,9 +912,9 @@ export class UIManager {
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
             x_expand: true
         }));
-        column.add_child(this._storageHead);
+        column.add_child(this._withSectionIcon(this._storageHead, 'drive-harddisk-symbolic'));
         column.add_child(storage_scrollView);
-        this._queueSectionRefresh('storage', 250);
+        this._queueSectionRefresh('storage', 0);
     }
 
     async _createPowerSection(column) {
@@ -844,19 +924,20 @@ export class UIManager {
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         this._powerBox = new St.BoxLayout({
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: false
         });
-        this._powerShow = new St.Label({
+        const loadingLabel = new St.Label({
             text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
             x_expand: true
         });
-        this._powerBox.add_child(this._powerShow);
-        column.add_child(this._powerHead);
+        this._powerShow = null;
+        this._powerBox.add_child(loadingLabel);
+        column.add_child(this._withSectionIcon(this._powerHead, 'battery-good-symbolic'));
         column.add_child(this._powerBox);
-        this._queueSectionRefresh('power', 150);
+        this._queueSectionRefresh('power', 0);
     }
 
     async _createOSSection(column) {
@@ -921,7 +1002,7 @@ export class UIManager {
         connectHover(this._device_OS);
         connectHover(this._device_Kernel);
 
-        this._queueSectionRefresh('os', 200);
+        this._queueSectionRefresh('os', 0);
     }
 
     async _createCPUSection(column) {
@@ -935,12 +1016,12 @@ export class UIManager {
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
         });
         this._coreBox = new St.BoxLayout({
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: true
         });
         const cpu_scrollView = new St.ScrollView({
-            style_class: './assets/custom-scroll',
+            style_class: 'custom-scroll',
             overlay_scrollbars: true,
             enable_mouse_scrolling: true,
             x_expand: true,
@@ -954,12 +1035,12 @@ export class UIManager {
             x_expand: true
         }));
 
-        const cpuHeadBox = new St.BoxLayout({ vertical: true });
-        cpuHeadBox.add_child(this._cpuHead);
+        const cpuHeadBox = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL });
+        cpuHeadBox.add_child(this._withSectionIcon(this._cpuHead, 'cpu-symbolic'));
         cpuHeadBox.add_child(this._cpuName);
         column.add_child(cpuHeadBox);
         column.add_child(cpu_scrollView);
-        this._queueSectionRefresh('cpu', 300);
+        this._queueSectionRefresh('cpu', 0);
     }
 
     async _createGPUSection(column) {
@@ -969,27 +1050,27 @@ export class UIManager {
             style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
         });
         this._gpuBox = new St.BoxLayout({
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: true,
             style: `padding: 5px;`
         });
         const gpu_scrollView = new St.ScrollView({
-            style_class: './assets/custom-scroll',
+            style_class: 'custom-scroll',
             overlay_scrollbars: true,
             enable_mouse_scrolling: true,
             x_expand: true,
             y_expand: true,
         });
         gpu_scrollView.set_child(this._gpuBox);
-        column.add_child(this._gpuHead);
+        column.add_child(this._withSectionIcon(this._gpuHead, 'video-display-symbolic'));
         column.add_child(gpu_scrollView);
         this._gpuBox.add_child(new St.Label({
             text: 'Loading...',
             style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
             x_expand: true
         }));
-        this._queueSectionRefresh('gpu', 450);
+        this._queueSectionRefresh('gpu', 0);
     }
 
     async _updateGPUInfo() {
@@ -1090,8 +1171,19 @@ export class UIManager {
     async _updateCPUInfo() {
         if (this._coreBox) {
             const cpuInfo = await this._systemLink.getCPUInfo();
+            if (cpuInfo !== this._lastCPUInfo && Array.isArray(cpuInfo.coreDetails)) {
+                this._cpuLoadHistory.push(cpuInfo.coreDetails.map(core =>
+                    Number.isFinite(core.load) ? core.load : 0
+                ));
+                if (this._cpuLoadHistory.length > 60)
+                    this._cpuLoadHistory.shift();
+                this._lastCPUInfo = cpuInfo;
+            }
             const themeColors = this._updateThemeColors();
-            updateCPUData({ cpuName: this._cpuName, coreBox: this._coreBox }, cpuInfo, themeColors, St);
+            updateCPUData({ cpuName: this._cpuName, coreBox: this._coreBox, showGraph: this._showCpuGraph }, {
+                ...cpuInfo,
+                loadHistory: this._cpuLoadHistory
+            }, themeColors, St);
         }
     }
 
@@ -1183,6 +1275,14 @@ export class UIManager {
                     // ignore disconnect errors
                 }
                 this._indicatorClickSignalId = null;
+            }
+            if (this._indicatorTouchSignalId) {
+                try {
+                    this._indicator.disconnect(this._indicatorTouchSignalId);
+                } catch (e) {
+                    // ignore disconnect errors
+                }
+                this._indicatorTouchSignalId = null;
             }
             this._indicator.destroy();
             this._indicator = null;

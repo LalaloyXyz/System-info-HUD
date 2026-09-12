@@ -37,7 +37,14 @@ export class NetworkModule extends BaseModule {
 
         this._publicIPInFlight = true;
         this._fetchAndCachePublicIP()
-            .catch(e => logError(e, 'System HUD: Failed to refresh public IP'))
+            .catch(e => {
+                logError(e, 'System HUD: Failed to refresh public IP');
+                this._cacheData.publicIP = {
+                    data: 'No internet',
+                    timestamp: Date.now(),
+                };
+                this._cache = { data: null, timestamp: 0 };
+            })
             .finally(() => { this._publicIPInFlight = false; });
     }
 
@@ -63,17 +70,18 @@ export class NetworkModule extends BaseModule {
         });
 
         if (!response)
-            return;
+            throw new Error('No response from public IP service');
 
         const decoder = new TextDecoder();
         const ip = decoder.decode(response).trim();
         if (!ip)
-            return;
+            throw new Error('Public IP service returned an empty response');
 
         this._cacheData.publicIP = {
             data: ip,
             timestamp: Date.now(),
         };
+        return ip;
     }
 
     async _hasExecutable(bin) {
@@ -156,34 +164,7 @@ export class NetworkModule extends BaseModule {
         }
 
         try {
-            const session = new Soup.Session();
-            try {
-                session.timeout = 3;
-            } catch (e) {
-                // ignore if property is not available
-            }
-            const message = Soup.Message.new('GET', 'https://api.ipify.org');
-            
-            const response = await new Promise((resolve, reject) => {
-                session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (session, res) => {
-                    try {
-                        const bytes = session.send_and_read_finish(res);
-                        resolve(bytes ? bytes.get_data() : null);
-                    } catch (e) {
-                        reject(e);
-                    }
-                });
-            });
-
-            if (response) {
-                const decoder = new TextDecoder();
-                const ip = decoder.decode(response).trim();
-                this._cacheData.publicIP = {
-                    data: ip,
-                    timestamp: now
-                };
-                return ip;
-            }
+            return await this._fetchAndCachePublicIP();
         } catch (e) {
             logError(e, 'System HUD: Failed to get public IP');
         }

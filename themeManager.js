@@ -14,10 +14,10 @@ export class ThemeManager {
         const colorScheme = this._themeSettings.get_string('color-scheme');
         const isDarkTheme = colorScheme === 'prefer-dark';
         return {
-            background: isDarkTheme ? '#212121' : '#f5f5f5',
-            text: isDarkTheme ? 'white' : 'black',
-            secondaryText: isDarkTheme ? 'rgb(180, 180, 180)' : 'rgb(45, 45, 45)',
-            accent: isDarkTheme ? 'black' : 'white',
+            background: isDarkTheme ? '#1d1f22' : '#f8fafc',
+            text: isDarkTheme ? '#f4f7fb' : '#17202a',
+            secondaryText: isDarkTheme ? '#a6adb8' : '#64748b',
+            accent: isDarkTheme ? '#3b4048' : '#cbd5e1',
             isDark: isDarkTheme
         };
     }

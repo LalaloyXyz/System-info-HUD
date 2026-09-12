@@ -1,4 +1,4 @@
-const { Gio, GLib } = imports.gi;
+import Gio from 'gi://Gio';
 
 export class BaseModule {
     constructor(cacheTTL = 5000) {
@@ -44,8 +44,13 @@ export class BaseModule {
             return await new Promise((resolve, reject) => {
                 subprocess.communicate_utf8_async(null, null, (proc, res) => {
                     try {
-                        const [, stdout] = proc.communicate_utf8_finish(res);
-                        resolve(stdout ? stdout.toString() : "");
+                        const [successful, stdout, stderr] = proc.communicate_utf8_finish(res);
+                        if (!successful || !proc.get_successful()) {
+                            const message = stderr?.toString().trim() || `Command failed: ${argv[0]}`;
+                            reject(new Error(message));
+                            return;
+                        }
+                        resolve(stdout ? stdout.toString() : '');
                     } catch (e) {
                         reject(e);
                     }

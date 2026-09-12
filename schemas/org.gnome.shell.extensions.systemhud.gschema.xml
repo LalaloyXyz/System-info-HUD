@@ -17,5 +17,27 @@
       <summary>Refresh interval</summary>
       <description>Base data fetch interval in milliseconds. Lower values refresh more often, while higher values reduce load and improve smoothness.</description>
     </key>
+    <key name="window-width-percent" type="i">
+      <default>40</default>
+      <range min="25" max="70"/>
+      <summary>HUD width</summary>
+      <description>HUD width as a percentage of the primary monitor.</description>
+    </key>
+    <key name="window-height-percent" type="i">
+      <default>40</default>
+      <range min="25" max="70"/>
+      <summary>HUD height</summary>
+      <description>HUD height as a percentage of the primary monitor.</description>
+    </key>
+    <key name="show-power-section" type="b">
+      <default>true</default>
+      <summary>Show power section</summary>
+      <description>Whether the battery and power section is shown.</description>
+    </key>
+    <key name="show-cpu-graph" type="b">
+      <default>true</default>
+      <summary>Show CPU graph</summary>
+      <description>Whether the per-core CPU history graph is shown.</description>
+    </key>
   </schema>
 </schemalist>
