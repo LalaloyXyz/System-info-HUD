@@ -102,50 +102,6 @@ lscpu  free  df  ip  upower  cat  uname  gnome-shell  lspci
 
 > Optional tools are detected automatically. Missing tools produce a useful fallback instead of preventing the extension from loading.
 
-## 📦 Installation
-
-### Manual installation
-
-Clone the repository into the GNOME Shell extensions directory:
-
-```bash
-git clone https://github.com/LalaloyXyz/System-info-HUD.git \\
-  ~/.local/share/gnome-shell/extensions/systemHUD@LalaloyXyz
-```
-
-Compile the settings schema:
-
-```bash
-cd ~/.local/share/gnome-shell/extensions/systemHUD@LalaloyXyz
-glib-compile-schemas schemas/
-```
-
-Enable the extension:
-
-```bash
-gnome-extensions enable systemHUD@LalaloyXyz
-```
-
-Log out and back in if GNOME Shell does not load the extension immediately. On Wayland, this is the safest way to reload GNOME Shell.
-
-### Install from a local archive
-
-To create an installable extension archive from a checkout:
-
-```bash
-glib-compile-schemas schemas/
-gnome-extensions pack --force \\
-  --extra-source=assets \\
-  --extra-source=modules \\
-  --extra-source=systemLink.js \\
-  --extra-source=themeManager.js \\
-  --extra-source=uiManager.js \\
-  --extra-source=updateData.js
-gnome-extensions install --force systemHUD@LalaloyXyz.shell-extension.zip
-glib-compile-schemas ~/.local/share/gnome-shell/extensions/systemHUD@LalaloyXyz/schemas/
-gnome-extensions enable systemHUD@LalaloyXyz
-```
-
 ## 🚀 Usage
 
 1. Enable **System Info HUD**.
@@ -155,14 +111,6 @@ gnome-extensions enable systemHUD@LalaloyXyz
 5. Press `Esc` or click `×` to close it.
 
 Open the extension preferences to configure animations, refresh timing, HUD size, the CPU graph, the power section, and the copy button.
-
-## 🛠 Development
-
-Watch GNOME Shell logs while testing:
-
-```bash
-journalctl --user -f -o cat /usr/bin/gnome-shell
-```
 
 ## 🤝 Contributing
 
