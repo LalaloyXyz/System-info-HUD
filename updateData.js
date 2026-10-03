@@ -6,6 +6,9 @@ import Cairo from 'cairo';
 
 const DETAIL_LABEL_STYLE = 'font-weight: bold; font-size: 11px;';
 const HELP_LABEL_STYLE = 'font-weight: bold; font-size: 10px;';
+const cpuGraphActors = new WeakMap();
+const gpuGraphActors = new WeakMap();
+const cpuGraphColors = new WeakMap();
 
 const TOOL_HELP = {
     cpuInfo: 'Need: lscpu (util-linux).',
@@ -101,13 +104,174 @@ const CORE_GRAPH_COLORS = [
     [0.95, 0.16, 0.28]
 ];
 
-function getCoreGraphColor(index) {
+function getCoreGraphColor(index, customColors = []) {
+    const match = String(customColors[index] || '').match(/^#([\da-f]{6})$/i);
+    if (match)
+        return [0, 2, 4].map(offset => parseInt(match[1].slice(offset, offset + 2), 16) / 255);
     return CORE_GRAPH_COLORS[index % CORE_GRAPH_COLORS.length];
 }
 
-function getCoreGraphCssColor(index) {
-    const [red, green, blue] = getCoreGraphColor(index);
+function getCoreGraphCssColor(index, customColors) {
+    const [red, green, blue] = getCoreGraphColor(index, customColors);
     return `rgb(${Math.round(red * 255)}, ${Math.round(green * 255)}, ${Math.round(blue * 255)})`;
+}
+
+function interpolateGraphColor(value, stops) {
+    const safeValue = Number.isFinite(value) ? value : stops[0][0];
+    if (safeValue <= stops[0][0])
+        return stops[0][1];
+
+    for (let index = 1; index < stops.length; index++) {
+        const [endValue, endColor] = stops[index];
+        const [startValue, startColor] = stops[index - 1];
+        if (safeValue <= endValue) {
+            const ratio = (safeValue - startValue) / (endValue - startValue);
+            return startColor.map((channel, channelIndex) =>
+                channel + (endColor[channelIndex] - channel) * ratio
+            );
+        }
+    }
+
+    return stops[stops.length - 1][1];
+}
+
+function getTemperatureGraphColor(value) {
+    return interpolateGraphColor(value, [
+        [0, [0.20, 0.78, 0.36]],
+        [50, [0.95, 0.78, 0.12]],
+        [70, [0.95, 0.48, 0.10]],
+        [80, [0.95, 0.20, 0.20]]
+    ]);
+}
+
+function getGraphCssColor(color) {
+    const [red, green, blue] = color.map(channel => Math.round(channel * 255));
+    return `rgb(${red}, ${green}, ${blue})`;
+}
+
+function drawSmoothTrace(cr, points) {
+    if (points.length === 0)
+        return;
+
+    cr.moveTo(...points[0]);
+    for (let index = 1; index < points.length; index++) {
+        const [previousX, previousY] = points[index - 1];
+        const [currentX, currentY] = points[index];
+        const distance = (currentX - previousX) * 0.35;
+        cr.curveTo(
+            previousX + distance, previousY,
+            currentX - distance, currentY,
+            currentX, currentY
+        );
+    }
+}
+
+function getGpuGraphColor(value, type) {
+    if (type === 'temperature') {
+        return interpolateGraphColor(value, [
+            [0, [0.20, 0.82, 0.48]],
+            [45, [1.0, 0.82, 0.18]],
+            [65, [1.0, 0.48, 0.10]],
+            [80, [0.95, 0.18, 0.20]]
+        ]);
+    }
+
+    return interpolateGraphColor(value, [
+        [0, [0.25, 0.55, 1.0]],
+        [35, [0.25, 0.82, 0.95]],
+        [60, [1.0, 0.68, 0.16]],
+        [80, [0.95, 0.18, 0.28]]
+    ]);
+}
+
+function addGpuGraph(gpuBox, label, history, type, themeColors, St, unit = '%', maxValue = 100, graphKey = label, summaryOverride = null) {
+    if (!Array.isArray(history) || history.length === 0)
+        return;
+
+    const values = history.filter(Number.isFinite);
+    if (values.length === 0)
+        return;
+
+    const current = values[values.length - 1];
+    const maximum = Math.max(...values);
+    const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const secondaryColor = themeColors?.secondaryText || themeColors?.text || '#ffffff';
+    const summary = summaryOverride || (type === 'temperature' || type === 'load'
+        ? `${label}  ·  Current ${current.toFixed(1)}${unit}  ·  Peak ${maximum.toFixed(1)}${unit}`
+        : `${label}  ·  Current ${current.toFixed(1)}${unit}  ·  Avg ${average.toFixed(1)}${unit}  ·  Peak ${maximum.toFixed(1)}${unit}`);
+    gpuBox.add_child(new St.Label({
+        text: summary,
+        style: `color: ${secondaryColor}; font-weight: bold; font-size: 10px; padding-left: 4px;`
+    }));
+
+    const graphs = gpuGraphActors.get(gpuBox) || new Map();
+    let graph = graphs.get(graphKey);
+    if (!graph) {
+        graph = new St.DrawingArea({
+            width: 280,
+            height: 86,
+            x_expand: true,
+            style: 'margin: 2px 0 6px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; background-color: rgba(255, 255, 255, 0.045);'
+        });
+        graph.connect('repaint', area => {
+        const cr = area.get_context();
+        const [width, height] = area.get_surface_size();
+        const left = 30;
+        const right = 8;
+        const top = 8;
+        const bottom = 14;
+        const plotWidth = Math.max(1, width - left - right);
+        const plotHeight = Math.max(1, height - top - bottom);
+        const visibleHistory = history.length < 60
+            ? [...Array.from({ length: 60 - history.length }, () => history[0]), ...history]
+            : history;
+        const point = (index, value) => [
+            visibleHistory.length === 1 ? left + plotWidth : left + (index / (visibleHistory.length - 1)) * plotWidth,
+            top + plotHeight - (Math.max(0, Math.min(maxValue, value)) / maxValue) * plotHeight
+        ];
+
+        cr.setLineWidth(1);
+        for (const level of [0, maxValue / 2, maxValue]) {
+            const y = top + plotHeight - (level / maxValue) * plotHeight;
+            cr.setSourceRGBA(0.7, 0.7, 0.7, 0.2);
+            cr.moveTo(left, y);
+            cr.lineTo(width - right, y);
+            cr.stroke();
+            cr.setSourceRGBA(0.7, 0.7, 0.7, 0.75);
+            cr.setFontSize(9);
+            cr.moveTo(2, y + 3);
+            cr.showText(`${level}${unit}`);
+        }
+
+        const points = visibleHistory.map((value, index) => point(index, value));
+        cr.setLineWidth(2.5);
+        cr.setLineCap(Cairo.LineCap.ROUND);
+        for (let index = 1; index < points.length; index++) {
+            const [previousX, previousY] = points[index - 1];
+            const [currentX, currentY] = points[index];
+            const distance = (currentX - previousX) * 0.35;
+            const value = (Number(visibleHistory[index - 1]) + Number(visibleHistory[index])) / 2;
+            const [red, green, blue] = getGpuGraphColor(value, type);
+            cr.moveTo(previousX, previousY);
+            cr.curveTo(
+                previousX + distance, previousY,
+                currentX - distance, currentY,
+                currentX, currentY
+            );
+            cr.setSourceRGB(red, green, blue);
+            cr.stroke();
+        }
+        const [x, y] = points[points.length - 1];
+        const [red, green, blue] = getGpuGraphColor(Number(visibleHistory[visibleHistory.length - 1]), type);
+        cr.setSourceRGB(red, green, blue);
+        cr.arc(x, y, 3, 0, Math.PI * 2);
+        cr.fill();
+        });
+        graphs.set(graphKey, graph);
+        gpuGraphActors.set(gpuBox, graphs);
+    }
+    gpuBox.add_child(graph);
+    graph.queue_repaint();
 }
 
 function clearBox(box) {
@@ -254,12 +418,12 @@ function parsePowerInfo(powerInfo) {
     };
 }
 
-function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St) {
+function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St, customColors) {
     const graph = new St.DrawingArea({
         width: 280,
-        height: 110,
+        height: 120,
         x_expand: true,
-        style: 'margin: 4px 0 8px; border-radius: 6px; background-color: rgba(255, 255, 255, 0.035);'
+        style: 'margin: 2px 0 8px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px;'
     });
 
     graph.connect('repaint', area => {
@@ -276,11 +440,9 @@ function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St) {
             ? loadHistory
             : [currentValues];
         const coreCount = Math.max(currentValues.length, ...history.map(sample => sample.length));
-
-        cr.setSourceRGBA(0.2, 0.2, 0.2, 0.18);
-        cr.rectangle(0, 0, width, height);
-        cr.fill();
-
+        const visibleHistory = history.length < 60
+            ? [...Array.from({ length: 60 - history.length }, () => history[0]), ...history]
+            : history;
         cr.setLineWidth(1);
         for (const level of [0, 50, 100]) {
             const y = top + plotHeight - (level / 100) * plotHeight;
@@ -298,10 +460,10 @@ function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St) {
             return;
 
         const point = (sampleIndex, coreIndex) => {
-            const x = history.length === 1
+            const x = (visibleHistory.length === 1
                 ? left + plotWidth
-                : left + (sampleIndex / (history.length - 1)) * plotWidth;
-            const value = Math.max(0, Math.min(100, Number(history[sampleIndex]?.[coreIndex]) || 0));
+                : left + (sampleIndex / (visibleHistory.length - 1)) * plotWidth);
+            const value = Math.max(0, Math.min(100, Number(visibleHistory[sampleIndex]?.[coreIndex]) || 0));
             const y = top + plotHeight - (value / 100) * plotHeight;
             return [x, y];
         };
@@ -309,23 +471,120 @@ function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St) {
         cr.setLineWidth(2);
         cr.setLineCap(Cairo.LineCap.ROUND);
         for (let coreIndex = 0; coreIndex < coreCount; coreIndex++) {
-            const [red, green, blue] = getCoreGraphColor(coreIndex);
-            cr.moveTo(...point(0, coreIndex));
-            for (let sampleIndex = 1; sampleIndex < history.length; sampleIndex++)
-                cr.lineTo(...point(sampleIndex, coreIndex));
+            const [red, green, blue] = getCoreGraphColor(coreIndex, cpuGraphColors.get(area));
+            const points = visibleHistory.map((_, sampleIndex) => point(sampleIndex, coreIndex));
+            drawSmoothTrace(cr, points);
             cr.setSourceRGB(red, green, blue);
             cr.stroke();
 
-            const [x, y] = point(history.length - 1, coreIndex);
+            const [x, y] = points[points.length - 1];
             cr.arc(x, y, 2.5, 0, Math.PI * 2);
             cr.fill();
         }
     });
 
+    cpuGraphColors.set(graph, customColors);
     coreBox.add_child(graph);
+    return graph;
 }
 
-function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true) {
+function addCPUTemperatureGraph(coreBox, coreDetails, temperatureHistory, themeColors, St) {
+    const graph = new St.DrawingArea({
+        width: 280,
+        height: 120,
+        x_expand: true,
+        style: 'margin: 2px 0 8px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px;'
+    });
+
+    graph.connect('repaint', area => {
+        const cr = area.get_context();
+        const [width, height] = area.get_surface_size();
+        const left = 30;
+        const right = 8;
+        const top = 10;
+        const bottom = 18;
+        const plotWidth = Math.max(1, width - left - right);
+        const plotHeight = Math.max(1, height - top - bottom);
+        const currentValues = coreDetails.map(core => {
+            const value = parseFloat(core.temp);
+            return Number.isFinite(value) ? value : 0;
+        });
+        const history = Array.isArray(temperatureHistory) && temperatureHistory.length > 0
+            ? temperatureHistory
+            : [currentValues];
+        const coreCount = Math.max(currentValues.length, ...history.map(sample => sample.length));
+        const visibleHistory = history.length < 60
+            ? [...Array.from({ length: 60 - history.length }, () => history[0]), ...history]
+            : history;
+        const minTemp = 0;
+        const maxTemp = 100;
+
+        cr.setLineWidth(1);
+        for (const level of [0, 50, 100]) {
+            const y = top + plotHeight - ((level - minTemp) / (maxTemp - minTemp)) * plotHeight;
+            cr.setSourceRGBA(0.7, 0.7, 0.7, 0.22);
+            cr.moveTo(left, y);
+            cr.lineTo(width - right, y);
+            cr.stroke();
+            cr.setSourceRGBA(0.7, 0.7, 0.7, 0.75);
+            cr.setFontSize(9);
+            cr.moveTo(2, y + 3);
+            cr.showText(`${level}°C`);
+        }
+
+        if (coreCount === 0)
+            return;
+
+        const point = (sampleIndex, coreIndex) => {
+            const x = visibleHistory.length === 1
+                ? left + plotWidth
+                : left + (sampleIndex / (visibleHistory.length - 1)) * plotWidth;
+            const rawValue = Number(visibleHistory[sampleIndex]?.[coreIndex]);
+            const value = Number.isFinite(rawValue) ? Math.max(minTemp, Math.min(maxTemp, rawValue)) : minTemp;
+            const y = top + plotHeight - ((value - minTemp) / (maxTemp - minTemp)) * plotHeight;
+            return [x, y];
+        };
+
+        cr.setLineWidth(2.5);
+        cr.setLineCap(Cairo.LineCap.ROUND);
+        for (let coreIndex = 0; coreIndex < coreCount; coreIndex++) {
+            const points = visibleHistory.map((_, sampleIndex) => point(sampleIndex, coreIndex));
+            for (let sampleIndex = 1; sampleIndex < points.length; sampleIndex++) {
+                const [previousX, previousY] = points[sampleIndex - 1];
+                const [currentX, currentY] = points[sampleIndex];
+                const distance = (currentX - previousX) * 0.35;
+                const previousValue = Number(visibleHistory[sampleIndex - 1]?.[coreIndex]) || 0;
+                const currentValue = Number(visibleHistory[sampleIndex]?.[coreIndex]) || 0;
+                const [red, green, blue] = getTemperatureGraphColor((previousValue + currentValue) / 2);
+                cr.moveTo(previousX, previousY);
+                cr.curveTo(
+                    previousX + distance, previousY,
+                    currentX - distance, currentY,
+                    currentX, currentY
+                );
+                cr.setSourceRGB(red, green, blue);
+                cr.stroke();
+            }
+
+            const [x, y] = points[points.length - 1];
+            const [red, green, blue] = getTemperatureGraphColor(Number(visibleHistory[visibleHistory.length - 1]?.[coreIndex]) || 0);
+            cr.setSourceRGB(red, green, blue);
+            cr.arc(x, y, 3, 0, Math.PI * 2);
+            cr.fill();
+        }
+    });
+
+    coreBox.add_child(graph);
+    return graph;
+}
+
+function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true, cpuCoreColors = []) {
+    const cachedGraphs = cpuGraphActors.get(coreBox);
+    if (cachedGraphs) {
+        for (const graph of cachedGraphs)
+            if (graph.get_parent() === coreBox)
+                coreBox.remove_child(graph);
+    }
     clearBox(coreBox);
 
     const textColor = themeColors?.text || '#ffffff';
@@ -333,27 +592,73 @@ function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true) {
     const baseStyle = `color: ${textColor}; font-weight: bold; font-size: 11px;`;
     const subtleStyle = `color: ${secondaryColor}; font-weight: bold; font-size: 11px;`;
 
-    if (showGraph)
-        addCPUGraph(coreBox, cpuInfo.coreDetails, cpuInfo.loadHistory, themeColors, St);
+    if (showGraph) {
+        const graphLabelStyle = `color: ${secondaryColor}; font-weight: bold; font-size: 10px; padding-left: 4px;`;
+        const temperatures = cpuInfo.coreDetails
+            .map(core => Number.parseFloat(core.temp))
+            .filter(Number.isFinite);
+        const loads = cpuInfo.coreDetails
+            .map(core => Number(core.load))
+            .filter(Number.isFinite);
+        const averageLoad = loads.length > 0
+            ? Math.round(loads.reduce((sum, value) => sum + value, 0) / loads.length)
+            : null;
+        const frequencies = cpuInfo.coreDetails
+            .map(core => Number(core.speed))
+            .filter(value => Number.isFinite(value) && value > 0);
+        const averageFrequency = frequencies.length > 0
+            ? Math.round(frequencies.reduce((sum, value) => sum + value, 0) / frequencies.length)
+            : null;
+        const currentTemperature = temperatures.length > 0 ? Math.round(Math.max(...temperatures)) : null;
+        const historicalTemperatures = Array.isArray(cpuInfo.temperatureHistory)
+            ? cpuInfo.temperatureHistory.flat().filter(Number.isFinite)
+            : [];
+        const peakTemperature = historicalTemperatures.length > 0
+            ? Math.round(Math.max(...historicalTemperatures))
+            : currentTemperature;
+        const loadSummary = averageLoad === null
+            ? 'CPU Load'
+            : `CPU Load  ·  Avg ${averageLoad}%` +
+                (averageFrequency === null ? '' : `  ·  Freq Avg ${averageFrequency} MHz`);
+        coreBox.add_child(new St.Label({ text: loadSummary, style: graphLabelStyle }));
+        const graphs = cachedGraphs || [];
+        const loadGraph = graphs[0] || addCPUGraph(coreBox, cpuInfo.coreDetails, cpuInfo.loadHistory, themeColors, St, cpuCoreColors);
+        if (graphs[0]) {
+            coreBox.add_child(loadGraph);
+            cpuGraphColors.set(loadGraph, cpuCoreColors);
+        }
+        loadGraph.queue_repaint();
+        const temperatureSummary = currentTemperature === null
+            ? 'Core Temperature'
+            : `Core Temperature  ·  Current ${currentTemperature}°C  ·  Peak ${peakTemperature}°C`;
+        coreBox.add_child(new St.Label({ text: temperatureSummary, style: graphLabelStyle }));
+        const temperatureGraph = graphs[1] || addCPUTemperatureGraph(coreBox, cpuInfo.coreDetails, cpuInfo.temperatureHistory, themeColors, St);
+        if (graphs[1]) {
+            coreBox.add_child(temperatureGraph);
+            temperatureGraph.queue_repaint();
+        }
+        cpuGraphActors.set(coreBox, [loadGraph, temperatureGraph]);
+    }
 
     for (let coreIndex = 0; coreIndex < cpuInfo.coreDetails.length; coreIndex++) {
         const core = cpuInfo.coreDetails[coreIndex];
         const load = Number.isFinite(core.load) ? core.load : 0;
         const tempNumber = parseFloat(core.temp);
-        const loadColor = getCoreGraphCssColor(coreIndex);
+        const loadColor = getCoreGraphCssColor(coreIndex, cpuCoreColors);
         const tempColor = Number.isFinite(tempNumber)
-            ? getGreenToRedColor(tempNumber, { medium: 50, warm: 70, hot: 80 })
+            ? getGraphCssColor(getTemperatureGraphColor(tempNumber))
             : secondaryColor;
 
         const row = new St.BoxLayout({
             orientation: Clutter.Orientation.HORIZONTAL,
             x_expand: true,
-            style: `padding: 4px 5px; margin-bottom: 2px; border-radius: 5px; border-left: 3px solid ${loadColor}; background-color: rgba(255, 255, 255, 0.035);`
+            style: `padding: 4px 5px; margin-bottom: 2px; border-radius: 5px; border-left: 3px solid ${loadColor};`
         });
 
         addCpuIndicator(row, loadColor, St);
         addCpuCell(row, core.name, `${baseStyle} color: ${loadColor};`, 50, St);
         addCpuCell(row, `${core.speed} MHz`, subtleStyle, 72, St);
+        addMetricBar(row, load, loadColor, St, 34);
         addCpuCell(row, `${load}%`, baseStyle, 34, St);
         addCpuIndicator(row, tempColor, St);
         addCpuCell(row, `Temp ${core.temp} °C`, baseStyle, 70, St);
@@ -421,14 +726,20 @@ function addGpuDetailRow(gpuBox, details, themeColors, St) {
     gpuBox.add_child(row);
 }
 
-function setGPURows(gpuBox, gpuInfo, themeColors, St) {
+function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpuTemperatureHistory = [], gpuLoadHistory = [], showGraph = true) {
+    const cachedGraphs = gpuGraphActors.get(gpuBox);
+    if (cachedGraphs) {
+        for (const graph of cachedGraphs.values())
+            if (graph.get_parent() === gpuBox)
+                gpuBox.remove_child(graph);
+    }
     clearBox(gpuBox);
 
     const { textColor } = sectionTextColors(themeColors);
     const titleStyle = `color: ${textColor}; font-weight: bold; font-size: 11px;`;
     const entries = gpuInfo.split(/\n\s*\n/).map(entry => entry.trim()).filter(Boolean);
 
-    for (const entry of entries) {
+    for (const [gpuIndex, entry] of entries.entries()) {
         const lines = entry.split('\n').map(line => line.trim()).filter(Boolean);
         const header = lines[0]?.match(/^GPU(\d+)\s+-\s+\[\s*(.+?)\s*\]/);
         if (!header)
@@ -441,14 +752,39 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St) {
 
         const body = lines.slice(1).join(' ');
         const vram = body.match(/VRAM:\s*([\d.]+MB)\s*\/\s*([\d.]+MB)\s*\|\s*([\d.]+)%/);
+        const videoMemory = body.match(/Memory Usage:\s*([\d.]+\s*MB)\s*\/\s*([\d.]+\s*GB)\s*\|\s*([\d.]+)%/);
         const temp = body.match(/Temp:\s*([\d.]+)\s*°C/);
         const clock = body.match(/Clockspeed:\s*([\d.]+)(?:\s*\/\s*([\d.]+))?\s*MHz/);
+        const frequency = body.match(/GPU Frequency:\s*([\d.]+)\s*MHz/);
+        const utilization = body.match(/GPU Utilization:\s*([\d.]+)%/);
 
-        if (vram) {
+        if (showGraph && utilization) {
+            const currentFrequency = frequency?.[1] || clock?.[1];
+            const loadSummary = `GPU${header[1]} Load  ·  Current ${utilization[1]}%` +
+                (currentFrequency ? `  ·  Frequency ${currentFrequency} MHz` : '');
+            addGpuGraph(gpuBox, `GPU${header[1]} Load`, gpuLoadHistory, 'load', themeColors, St, '%', 100, `load-${gpuIndex}`, loadSummary);
+        }
+        if (showGraph && videoMemory) {
+            addGpuGraph(gpuBox, 'Memory Usage', gpuMemoryHistory, 'memory', themeColors, St, '%', 100, `memory-${gpuIndex}`,
+                `Memory Usage  ·  ${videoMemory[1]} / ${videoMemory[2]}  ·  Load ${videoMemory[3]}%`);
+        } else if (showGraph && vram) {
             const percent = parseFloat(vram[3]);
+            addGpuGraph(gpuBox, 'VRAM Usage', gpuMemoryHistory, 'memory', themeColors, St, '%', 100, `memory-${gpuIndex}`,
+                `VRAM Usage  ·  ${vram[1]} / ${vram[2]}  ·  Load ${vram[3]}%`);
             addGpuMetricRow(gpuBox, {
                 name: 'VRAM',
                 value: `${vram[1]} / ${vram[2]}`,
+                percent,
+                color: getGreenToRedColor(percent, { medium: 50, warm: 70, hot: 90 })
+            }, themeColors, St);
+        }
+        if (showGraph && temp)
+            addGpuGraph(gpuBox, 'GPU Temperature', gpuTemperatureHistory, 'temperature', themeColors, St, '°C', 100, `temperature-${gpuIndex}`);
+        if (videoMemory) {
+            const percent = parseFloat(videoMemory[3]);
+            addGpuMetricRow(gpuBox, {
+                name: 'Memory Usage ',
+                value: `${videoMemory[1]} / ${videoMemory[2]}`,
                 percent,
                 color: getGreenToRedColor(percent, { medium: 50, warm: 70, hot: 90 })
             }, themeColors, St);
@@ -459,7 +795,7 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St) {
             detailRows.push({
                 name: 'Temp',
                 value: `${temp[1]} °C`,
-                color: getGreenToRedColor(tempValue, { medium: 55, warm: 70, hot: 80 }),
+                color: getGraphCssColor(getGpuGraphColor(tempValue, 'temperature')),
                 valueWidth: 58
             });
         }
@@ -475,11 +811,21 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St) {
                 valueWidth: 108
             });
         }
+        if (frequency) {
+            const current = parseFloat(frequency[1]);
+            detailRows.push({
+                name: 'GPU Frequency',
+                value: `${frequency[1]} MHz`,
+                color: getGreenToRedColor(Math.min(100, current / 20), { medium: 50, warm: 70, hot: 90 }),
+                nameWidth: 92,
+                valueWidth: 78
+            });
+        }
         addGpuDetailRow(gpuBox, detailRows, themeColors, St);
     }
 }
 
-export function updateCPUData({ cpuName, coreBox, showGraph = true }, cpuInfo, themeColors, St) {
+export function updateCPUData({ cpuName, coreBox, showGraph = true, cpuCoreColors = [] }, cpuInfo, themeColors, St) {
     if (!St && themeColors?.Label) {
         St = themeColors;
         themeColors = null;
@@ -491,7 +837,7 @@ export function updateCPUData({ cpuName, coreBox, showGraph = true }, cpuInfo, t
     if (cpuName && cpuInfo)
         cpuName.text = `${cpuInfo.cpu} x ${cpuInfo.core}`;
     if (coreBox && cpuInfo && Array.isArray(cpuInfo.coreDetails)) {
-        setCPURows(coreBox, cpuInfo, themeColors, St, showGraph);
+        setCPURows(coreBox, cpuInfo, themeColors, St, showGraph, cpuCoreColors);
     } else if (coreBox && cpuInfo && cpuInfo.coreSpeeds) {
         const lines = cpuInfo.coreSpeeds.map(text => ({ text, style: labelStyle }));
         if (cpuInfo.cpu === 'Unknown CPU' || cpuInfo.core === 0)
@@ -683,13 +1029,13 @@ export function updateDeviceData({ deviceWithUptime }, uptime) {
     if (deviceWithUptime) deviceWithUptime.text = uptime;
 }
 
-export function updateGPUData({ gpuBox, gpuHead }, gpuInfo, themeColors, St) {
+export function updateGPUData({ gpuBox, gpuHead, gpuMemoryHistory = [], gpuTemperatureHistory = [], gpuLoadHistory = [], showGraph = true }, gpuInfo, themeColors, St) {
     if (gpuBox) {
         if (gpuHead)
             gpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
         const detailStyle = `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`;
         if (St && gpuInfo) {
-            setGPURows(gpuBox, gpuInfo, themeColors, St);
+            setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory, gpuTemperatureHistory, gpuLoadHistory, showGraph);
             if (gpuBox.get_children().length > 0)
                 return;
         }

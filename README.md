@@ -134,8 +134,15 @@ To create an installable extension archive from a checkout:
 
 ```bash
 glib-compile-schemas schemas/
-gnome-extensions pack --force
+gnome-extensions pack --force \\
+  --extra-source=assets \\
+  --extra-source=modules \\
+  --extra-source=systemLink.js \\
+  --extra-source=themeManager.js \\
+  --extra-source=uiManager.js \\
+  --extra-source=updateData.js
 gnome-extensions install --force systemHUD@LalaloyXyz.shell-extension.zip
+glib-compile-schemas ~/.local/share/gnome-shell/extensions/systemHUD@LalaloyXyz/schemas/
 gnome-extensions enable systemHUD@LalaloyXyz
 ```
 

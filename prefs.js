@@ -1,8 +1,29 @@
 import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
+import Gdk from 'gi://Gdk';
+import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
+
+const DEFAULT_CPU_COLORS = [
+    '#944cf2', '#5940f2', '#407aff', '#38b8ff', '#33e6e0', '#2ed18c',
+    '#73e040', '#c7eb2e', '#ffd12e', '#ff991f', '#ff6129', '#f22947'
+];
+
+function getCpuCoreCount() {
+    let coreCount = GLib.get_num_processors();
+    try {
+        const [success, contents] = GLib.file_get_contents('/proc/stat');
+        if (success) {
+            const cpuEntries = new TextDecoder().decode(contents).match(/^cpu\d+\s/gm) || [];
+            coreCount = Math.max(coreCount, cpuEntries.length);
+        }
+    } catch (error) {
+        // Keep GLib's processor count if /proc/stat is unavailable.
+    }
+    return coreCount;
+}
 
 export default class SystemHUDPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
@@ -150,5 +171,41 @@ export default class SystemHUDPreferences extends ExtensionPreferences {
         });
         settings.bind('show-cpu-graph', graphRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         displayGroup.add(graphRow);
+
+        const gpuGraphRow = new Adw.SwitchRow({
+            title: _('Show GPU graphs'),
+            subtitle: _('Display GPU utilization, memory and temperature history graphs.'),
+        });
+        settings.bind('show-gpu-graph', gpuGraphRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        displayGroup.add(gpuGraphRow);
+
+        const coreColorsRow = new Adw.ExpanderRow({
+            title: _('CPU core colors'),
+            subtitle: _('Choose a color for every detected CPU processor trace and indicator.'),
+        });
+        const coreCount = getCpuCoreCount();
+        const savedColors = settings.get_strv('cpu-core-colors');
+        const defaultColor = index => DEFAULT_CPU_COLORS[index % DEFAULT_CPU_COLORS.length];
+        for (let index = 0; index < coreCount; index++) {
+            const color = new Gdk.RGBA();
+            color.parse(savedColors[index] || defaultColor(index));
+            const colorButton = new Gtk.ColorDialogButton({ dialog: new Gtk.ColorDialog() });
+            colorButton.set_rgba(color);
+
+            const row = new Adw.ActionRow({ title: `${_('Core')} ${index + 1}` });
+            row.add_suffix(colorButton);
+            coreColorsRow.add_row(row);
+
+            colorButton.connect('notify::rgba', button => {
+                const selected = button.get_rgba();
+                const toHex = value => Math.round(value * 255).toString(16).padStart(2, '0');
+                const colors = settings.get_strv('cpu-core-colors');
+                while (colors.length < coreCount)
+                    colors.push(defaultColor(colors.length));
+                colors[index] = `#${toHex(selected.red)}${toHex(selected.green)}${toHex(selected.blue)}`;
+                settings.set_strv('cpu-core-colors', colors);
+            });
+        }
+        displayGroup.add(coreColorsRow);
     }
 }

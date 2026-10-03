@@ -39,5 +39,15 @@
       <summary>Show CPU graph</summary>
       <description>Whether the per-core CPU history graph is shown.</description>
     </key>
+    <key name="show-gpu-graph" type="b">
+      <default>true</default>
+      <summary>Show GPU graphs</summary>
+      <description>Whether GPU utilization, memory and temperature history graphs are shown.</description>
+    </key>
+    <key name="cpu-core-colors" type="as">
+      <default>[]</default>
+      <summary>CPU core colors</summary>
+      <description>Custom colors for CPU load graph traces and core indicators.</description>
+    </key>
   </schema>
 </schemalist>

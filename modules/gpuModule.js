@@ -1,4 +1,5 @@
 import { BaseModule } from './baseModule.js';
+import Gio from 'gi://Gio';
 
 export class GPUModule extends BaseModule {
     constructor() {
@@ -70,7 +71,7 @@ export class GPUModule extends BaseModule {
             if (!hasNvidia) return gpus;
             const nvidiaData = await this._executeCommand([
                 'nvidia-smi',
-                '--query-gpu=name,memory.total,memory.used,temperature.gpu',
+                '--query-gpu=name,memory.total,memory.used,temperature.gpu,utilization.gpu',
                 '--format=csv,noheader,nounits'
             ]);
             // Get clockspeed (current and max)
@@ -87,7 +88,7 @@ export class GPUModule extends BaseModule {
             const gpuLines = nvidiaData.trim().split('\n');
             for (let i = 0; i < gpuLines.length; i++) {
                 const line = gpuLines[i];
-                const [name, total, used, temp] = line.split(',').map(s => s.trim());
+                const [name, total, used, temp, utilization] = line.split(',').map(s => s.trim());
                 let clockspeed, clockspeedMax;
                 if (clocks[i]) {
                     clockspeed = clocks[i][0];
@@ -98,6 +99,7 @@ export class GPUModule extends BaseModule {
                     vramTotal: total,
                     vramUsed: used,
                     temp,
+                    utilization: Number.parseFloat(utilization),
                     clockspeed,
                     clockspeedMax
                 });
@@ -146,10 +148,84 @@ export class GPUModule extends BaseModule {
                     });
                 }
             }
+
+            // Integrated AMD GPUs may not be exposed by rocm-smi or sensors.
+            // lspci still reports them as a Display controller, so use that as
+            // a lightweight identification fallback.
+            if (gpus.length === 0) {
+                const lspciOutput = await this._executeCommand(['lspci', '-nn']);
+                for (const line of lspciOutput.split('\n')) {
+                    if (!/(?:VGA compatible controller|3D controller|Display controller)(?:\s+\[[^\]]+\])?:/i.test(line) ||
+                        !/(?:AMD|ATI|Radeon)/i.test(line))
+                        continue;
+
+                    const name = line
+                        .replace(/^.*?(?:VGA compatible controller|3D controller|Display controller)(?:\s+\[[^\]]+\])?:\s*/i, '')
+                        .replace(/\s+\[[0-9a-f]{4}:[0-9a-f]{4}\]/gi, '')
+                        .replace(/\s+\(rev\s+[^)]+\)\s*$/i, '')
+                        .trim();
+                    if (name && !gpus.some(gpu => gpu.name === name))
+                        gpus.push({ name });
+                }
+            }
+
+            const drmStats = await this._getAmdDrmStats();
+            if (drmStats && gpus.length > 0)
+                Object.assign(gpus[0], drmStats);
         } catch (e) {
             // Ignore
         }
         return gpus;
+    }
+
+    async _getAmdDrmStats() {
+        try {
+            const cardDirs = await this._getDrmCardDirs();
+            for (const cardDir of cardDirs) {
+                const vendor = (await this._readFile(`${cardDir}vendor`)).trim().toLowerCase();
+                if (vendor !== '0x1002')
+                    continue;
+
+                const used = Number.parseInt((await this._readFile(`${cardDir}mem_info_vram_used`)).trim(), 10);
+                const total = Number.parseInt((await this._readFile(`${cardDir}mem_info_vram_total`)).trim(), 10);
+                const busy = Number.parseFloat((await this._readFile(`${cardDir}gpu_busy_percent`)).trim());
+                const states = await this._readFile(`${cardDir}pp_dpm_sclk`);
+                const frequencyMatch = states.match(/\b(\d+)\s*Mhz\s*\*/i);
+                const frequency = frequencyMatch ? Number.parseInt(frequencyMatch[1], 10) : undefined;
+
+                return {
+                    vramUsedBytes: Number.isFinite(used) ? used : undefined,
+                    vramTotalBytes: Number.isFinite(total) ? total : undefined,
+                    utilization: Number.isFinite(busy) ? busy : undefined,
+                    clockspeed: frequency
+                };
+            }
+        } catch (e) {
+            // DRM telemetry is optional.
+        }
+        return null;
+    }
+
+    async _getDrmCardDirs() {
+        const cardDirs = [];
+        try {
+            const drmDir = Gio.File.new_for_path('/sys/class/drm');
+            const enumerator = drmDir.enumerate_children(
+                'standard::name',
+                Gio.FileQueryInfoFlags.NONE,
+                null
+            );
+            let info;
+            while ((info = enumerator.next_file(null))) {
+                const name = info.get_name();
+                if (/^card\d+$/.test(name))
+                    cardDirs.push(drmDir.get_child(name).get_child('device').get_path() + '/');
+            }
+            enumerator.close(null);
+        } catch (e) {
+            // DRM telemetry is optional.
+        }
+        return cardDirs;
     }
 
     async _getIntelInfo() {
@@ -278,7 +354,7 @@ export class GPUModule extends BaseModule {
     // Fallback: Try to get clockspeed from /sys/class/drm/card*/device/ for any GPU if not already set
     async _addFallbackClockspeed(gpus) {
         try {
-            const cardDirs = GLib.glob_sync('/sys/class/drm/card*/device/', 0, null);
+            const cardDirs = await this._getDrmCardDirs();
             for (let i = 0; i < gpus.length; i++) {
                 const gpu = gpus[i];
                 if (!gpu.clockspeed) {
@@ -309,7 +385,13 @@ export class GPUModule extends BaseModule {
         // First line: VRAM and Temp (with emojis)
         let line1 = `GPU${idx} - [ ${gpu.name} ]`;
         const vramFields = [];
-        if (gpu.vramUsed && gpu.vramTotal) {
+        if (gpu.vramUsedBytes && gpu.vramTotalBytes) {
+            const usedMB = gpu.vramUsedBytes / 1000000;
+            const totalGB = gpu.vramTotalBytes / 1000000000;
+            const load = Math.round((gpu.vramUsedBytes / gpu.vramTotalBytes) * 100);
+            const vramEmoji = this._getStatusEmoji(load, [90, 70, 50, 30]);
+            vramFields.push(`${vramEmoji} Memory Usage: ${usedMB.toFixed(2)} MB / ${totalGB.toFixed(2)} GB | ${load}%`);
+        } else if (gpu.vramUsed && gpu.vramTotal) {
             const load = Math.round((parseInt(gpu.vramUsed) / parseInt(gpu.vramTotal)) * 100);
             const vramEmoji = this._getStatusEmoji(load, [90, 70, 50, 30]);
             vramFields.push(`${vramEmoji} VRAM: ${gpu.vramUsed}MB / ${gpu.vramTotal}MB | ${load}% |`);
@@ -319,6 +401,8 @@ export class GPUModule extends BaseModule {
             const tempEmoji = this._getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
             vramFields.push(`${tempEmoji} Temp: ${gpu.temp} °C`);
         }
+        if (Number.isFinite(Number(gpu.utilization)))
+            vramFields.push(`GPU Utilization: ${gpu.utilization}%`);
         if (vramFields.length) line1 += '\n' + vramFields.join(' ');
         let line2 = '';
         if (gpu.clockspeed && gpu.clockspeedMax) {
@@ -328,9 +412,10 @@ export class GPUModule extends BaseModule {
         } else if (gpu.clockspeed) {
             const clkNum = parseFloat(gpu.clockspeed);
             const clkEmoji = this._getStatusEmoji(clkNum, [2000, 1500, 1000, 500, 200, 0]);
-            line2 = `${clkEmoji} Clockspeed: ${gpu.clockspeed} MHz`;
+            const frequency = Number.isFinite(clkNum) ? clkNum.toFixed(2) : gpu.clockspeed;
+            line2 = `${clkEmoji} GPU Frequency: ${frequency} MHz`;
         }
-        return line2 ? `${line1}\n${line2}` : line1;
+        return [line1, line2].filter(Boolean).join('\n');
     }
 
     _getGpuInfoAsync(callback) {

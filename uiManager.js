@@ -58,11 +58,17 @@ export class UIManager {
         this._showCopyButton = true; // Default: show copy button
         this._showPowerSection = true;
         this._showCpuGraph = true;
+        this._showGpuGraph = true;
+        this._cpuCoreColors = [];
         this._popupWidthPercent = 40;
         this._popupHeightPercent = 40;
         this._labelTimeoutIds = []; // Track label animation timeouts
         this._updateInProgress = false; // prevent overlapping updates
         this._cpuLoadHistory = [];
+        this._cpuTemperatureHistory = [];
+        this._gpuMemoryHistory = [];
+        this._gpuTemperatureHistory = [];
+        this._gpuLoadHistory = [];
         this._lastCPUInfo = null;
         this._mainScreenKeyPressId = null;
         this._indicatorClickSignalId = null;
@@ -76,6 +82,8 @@ export class UIManager {
             this._showCopyButton = this._settings.get_boolean('show-copy-button');
             this._showPowerSection = this._settings.get_boolean('show-power-section');
             this._showCpuGraph = this._settings.get_boolean('show-cpu-graph');
+            this._showGpuGraph = this._settings.get_boolean('show-gpu-graph');
+            this._cpuCoreColors = this._settings.get_strv('cpu-core-colors');
             this._popupWidthPercent = this._settings.get_int('window-width-percent');
             this._popupHeightPercent = this._settings.get_int('window-height-percent');
             this._applyRefreshInterval(this._settings.get_int('refresh-interval-ms'));
@@ -97,6 +105,16 @@ export class UIManager {
             }));
             this._settingsSignalIds.push(this._settings.connect('changed::show-cpu-graph', () => {
                 this._showCpuGraph = this._settings.get_boolean('show-cpu-graph');
+                this._lastCPUInfo = null;
+                this._queueSectionRefresh('cpu', 0);
+            }));
+            this._settingsSignalIds.push(this._settings.connect('changed::show-gpu-graph', () => {
+                this._showGpuGraph = this._settings.get_boolean('show-gpu-graph');
+                this._queueSectionRefresh('gpu', 0);
+            }));
+            this._settingsSignalIds.push(this._settings.connect('changed::cpu-core-colors', () => {
+                this._cpuCoreColors = this._settings.get_strv('cpu-core-colors');
+                this._lastCPUInfo = null;
                 this._queueSectionRefresh('cpu', 0);
             }));
             this._settingsSignalIds.push(this._settings.connect('changed::window-width-percent', () => {
@@ -133,7 +151,8 @@ export class UIManager {
         if (!this._main_screen)
             return;
 
-        this._updateTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, this._refreshIntervalMs, () => {
+        const updateLoopInterval = Math.min(this._refreshIntervalMs, 500);
+        this._updateTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, updateLoopInterval, () => {
             if (this._updateInProgress)
                 return GLib.SOURCE_CONTINUE;
 
@@ -554,7 +573,7 @@ export class UIManager {
     async _createLeftColumn(column, popupHeight) {
         // Create sections
         const sections = [
-            { height: Math.floor(popupHeight * 0.06), type: 'space' },
+            { height: Math.floor(popupHeight * 0.04), type: 'space' },
             { height: Math.floor(popupHeight * 0.18), type: 'device' },
             { height: Math.floor(popupHeight * 0.04), type: 'space' },
             { height: Math.floor(popupHeight * 0.12), type: 'network' },
@@ -601,12 +620,12 @@ export class UIManager {
     async _createRightColumn(column, popupHeight) {
         // Create sections
         const sections = [
-            { height: Math.floor(popupHeight * 0.12), type: 'space' },
+            { height: Math.floor(popupHeight * 0.11), type: 'space' },
             { height: Math.floor(popupHeight * 0.10), type: 'os' },
-            { height: Math.floor(popupHeight * 0.06), type: 'space' },
+            { height: Math.floor(popupHeight * 0.04), type: 'space' },
             { height: Math.floor(popupHeight * 0.38), type: 'cpu' },
-            { height: Math.floor(popupHeight * 0.044), type: 'space' },
-            { height: Math.floor(popupHeight * 0.22), type: 'gpu' }
+            { height: Math.floor(popupHeight * 0.02), type: 'space' },
+            { height: Math.floor(popupHeight * 0.30), type: 'gpu' }
         ];
 
         // create shells synchronously, populate sections in parallel
@@ -711,27 +730,64 @@ export class UIManager {
         const cpu = info.cpu || {};
         const power = info.power || 'Unknown';
         const storage = typeof info.storage === 'string' ? info.storage : '';
-        const coreSpeeds = Array.isArray(cpu.coreSpeeds) ? cpu.coreSpeeds : [];
+        const coreDetails = Array.isArray(cpu.coreDetails) ? cpu.coreDetails : [];
+        const cpuLoads = coreDetails.map(core => Number(core.load)).filter(Number.isFinite);
+        const cpuTemps = coreDetails.map(core => Number.parseFloat(core.temp)).filter(Number.isFinite);
+        const averageLoad = cpuLoads.length
+            ? `${(cpuLoads.reduce((sum, value) => sum + value, 0) / cpuLoads.length).toFixed(1)}%`
+            : 'N/A';
+        const averageTemp = cpuTemps.length
+            ? `${(cpuTemps.reduce((sum, value) => sum + value, 0) / cpuTemps.length).toFixed(1)} °C`
+            : 'N/A';
+        const peakTemp = cpuTemps.length ? `${Math.max(...cpuTemps)} °C` : 'N/A';
         const storageLines = storage
             ? storage.split('\n').filter(line => line.trim().length > 0).map(line => `  ${line}`)
             : ['  N/A'];
-
-        const memoryLine = `RAM: ${memory.use || 'N/A'} / ${memory.max || 'N/A'} (${memory.percent || 'N/A'}) | ` +
-            `Cache: ${memory.cache || 'N/A'} | Swap: ${memory.swapUse || 'N/A'} / ${memory.swapMax || 'N/A'} (${memory.swapPercent || 'N/A'})`;
+        const gpuText = typeof info.gpu === 'string' && info.gpu.trim()
+            ? info.gpu.split('\n').map(line => `  ${line}`).join('\n')
+            : '  N/A';
+        const networkSpeed = network.networkSpeed || 'N/A';
 
         const text = [
-            `Uptime: ${info.uptime || 'Unknown'}`,
-            `OS: ${system.osName || 'Unknown'} [${system.osType || 'Unknown'}]`,
+            'SYSTEM SNAPSHOT FOR AI ANALYSIS',
+            'Analyze likely performance or thermal bottlenecks from the measurements below. Distinguish measured facts from hypotheses, and state what additional data would help. “N/A” means unavailable.',
+            '',
+            'SYSTEM',
+            `Hostname and uptime: ${info.uptime || 'Unknown'}`,
+            `OS: ${system.osName || 'Unknown'}`,
+            `Architecture: ${system.osType || 'Unknown'}`,
             `Kernel: ${system.kernelVersion || 'Unknown'}`,
-            `CPU: ${cpu.cpu || 'Unknown'} x ${cpu.core || '0'}`,
-            ...(coreSpeeds.length > 0
-                ? ['CPU Per-core:', ...coreSpeeds.map(line => `  ${line}`)]
-                : ['CPU Per-core: N/A']),
-            `GPU: ${info.gpu || 'Unknown'}`, memoryLine,
-            'Storage:',
+            `GNOME Shell: ${system.gnomeVersion || 'Unknown'}`,
+            `Session: ${system.sessionType || 'Unknown'}`,
+            '',
+            'CPU',
+            `Model: ${cpu.cpu || 'Unknown'}`,
+            `Logical cores: ${cpu.core ?? 'N/A'}`,
+            `Average per-core load: ${averageLoad}`,
+            `Average core temperature: ${averageTemp}`,
+            `Highest core temperature: ${peakTemp}`,
+            'Per-core measurements (frequency, load, temperature):',
+            ...(coreDetails.length > 0
+                ? coreDetails.map(core => `  ${core.name || `Core ${core.index}`} | ${core.speed ?? 'N/A'} MHz | ${core.load ?? 'N/A'}% | ${core.temp ?? 'N/A'} °C`)
+                : ['  N/A']),
+            '',
+            'GPU',
+            gpuText,
+            '',
+            'MEMORY',
+            `RAM used / total: ${memory.use || 'N/A'} GB / ${memory.max || 'N/A'} (${memory.percent || 'N/A'})`,
+            `Memory cache: ${memory.cache || 'N/A'}`,
+            `Swap used / total: ${memory.swapUse || 'N/A'} GB / ${memory.swapMax || 'N/A'} (${memory.swapPercent || 'N/A'})`,
+            '',
+            'STORAGE',
             ...storageLines,
-            `Network: ${network.wifiSSID || 'Unknown'} | LAN: ${network.lanIP || 'Unknown'} | Public: ${network.publicIP || 'Unknown'}`,
-            `Power: ${power || 'Unknown'}`
+            '',
+            'NETWORK (IP addresses and Wi-Fi name omitted)',
+            `Connection: ${network.wifiSSID && network.wifiSSID !== 'Unknown' ? 'Wi-Fi connected' : 'Unknown'}`,
+            `Measured network speed: ${networkSpeed}`,
+            '',
+            'POWER',
+            String(power || 'Unknown').split('\n').map(line => `  ${line}`).join('\n')
         ].join('\n');
 
         const clipboard = St.Clipboard.get_default();
@@ -1074,7 +1130,32 @@ export class UIManager {
         if (this._gpuBox) {
             const themeColors = this._updateThemeColors();
             const gpuInfo = await this._systemLink.getGPUInfo();
-            updateGPUData({ gpuBox: this._gpuBox, gpuHead: this._gpuHead }, gpuInfo, themeColors, St);
+            const memoryMatch = gpuInfo?.match(/(?:Memory Usage|VRAM):\s*[\d.]+\s*MB\s*\/\s*[\d.]+\s*(?:GB|MB)\s*\|\s*([\d.]+)%/);
+            const temperatureMatch = gpuInfo?.match(/Temp:\s*([\d.]+)\s*°C/);
+            const loadMatch = gpuInfo?.match(/GPU Utilization:\s*([\d.]+)%/);
+            if (memoryMatch) {
+                this._gpuMemoryHistory.push(Number.parseFloat(memoryMatch[1]));
+                if (this._gpuMemoryHistory.length > 60)
+                    this._gpuMemoryHistory.shift();
+            }
+            if (temperatureMatch) {
+                this._gpuTemperatureHistory.push(Number.parseFloat(temperatureMatch[1]));
+                if (this._gpuTemperatureHistory.length > 60)
+                    this._gpuTemperatureHistory.shift();
+            }
+            if (loadMatch) {
+                this._gpuLoadHistory.push(Number.parseFloat(loadMatch[1]));
+                if (this._gpuLoadHistory.length > 60)
+                    this._gpuLoadHistory.shift();
+            }
+            updateGPUData({
+                gpuBox: this._gpuBox,
+                gpuHead: this._gpuHead,
+                gpuMemoryHistory: this._gpuMemoryHistory,
+                gpuTemperatureHistory: this._gpuTemperatureHistory,
+                gpuLoadHistory: this._gpuLoadHistory,
+                showGraph: this._showGpuGraph,
+            }, gpuInfo, themeColors, St);
         }
     }
 
@@ -1168,18 +1249,29 @@ export class UIManager {
     async _updateCPUInfo() {
         if (this._coreBox) {
             const cpuInfo = await this._systemLink.getCPUInfo();
-            if (cpuInfo !== this._lastCPUInfo && Array.isArray(cpuInfo.coreDetails)) {
-                this._cpuLoadHistory.push(cpuInfo.coreDetails.map(core =>
-                    Number.isFinite(core.load) ? core.load : 0
-                ));
-                if (this._cpuLoadHistory.length > 60)
-                    this._cpuLoadHistory.shift();
-                this._lastCPUInfo = cpuInfo;
-            }
+            if (cpuInfo === this._lastCPUInfo)
+                return;
+
+            if (!Array.isArray(cpuInfo.coreDetails))
+                return;
+
+            this._cpuLoadHistory.push(cpuInfo.coreDetails.map(core =>
+                Number.isFinite(core.load) ? core.load : 0
+            ));
+            if (this._cpuLoadHistory.length > 60)
+                this._cpuLoadHistory.shift();
+            this._cpuTemperatureHistory.push(cpuInfo.coreDetails.map(core => {
+                const temperature = Number.parseFloat(core.temp);
+                return Number.isFinite(temperature) ? temperature : 0;
+            }));
+            if (this._cpuTemperatureHistory.length > 60)
+                this._cpuTemperatureHistory.shift();
+            this._lastCPUInfo = cpuInfo;
             const themeColors = this._updateThemeColors();
-            updateCPUData({ cpuName: this._cpuName, coreBox: this._coreBox, showGraph: this._showCpuGraph }, {
+            updateCPUData({ cpuName: this._cpuName, coreBox: this._coreBox, showGraph: this._showCpuGraph, cpuCoreColors: this._cpuCoreColors }, {
                 ...cpuInfo,
-                loadHistory: this._cpuLoadHistory
+                loadHistory: this._cpuLoadHistory,
+                temperatureHistory: this._cpuTemperatureHistory
             }, themeColors, St);
         }
     }
