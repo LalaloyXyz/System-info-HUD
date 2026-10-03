@@ -905,7 +905,7 @@ export function updateMemoryData({ memoryBox, memoryUse, memorySwap, memoryCache
         if (memoryCache && themeColors) memoryCache.set_style(helpLabelStyle(themeColors));
         if (memorySwap) memorySwap.text = '';
     } else {
-        if (memoryUse) memoryUse.text = `${memoryInfo.loadEmoji} [ ${memoryInfo.use} / ${memoryInfo.max} ] [${memoryInfo.percent}]`;
+        if (memoryUse) memoryUse.text = `${memoryInfo.loadMarker} [ ${memoryInfo.use} / ${memoryInfo.max} ] [${memoryInfo.percent}]`;
         if (memorySwap) memorySwap.text = `Swap ${memoryInfo.swapUse} / ${memoryInfo.swapMax} [${memoryInfo.swapPercent}]`;
         if (memoryCache) memoryCache.text = `Cache ${memoryInfo.cache}`;
         if (memoryCache && themeColors) memoryCache.set_style(detailLabelStyle(themeColors));

@@ -382,24 +382,24 @@ export class GPUModule extends BaseModule {
     }
 
     _formatGpuInfo(gpu, idx) {
-        // First line: VRAM and Temp (with emojis)
+        // First line: VRAM and temperature status markers
         let line1 = `GPU${idx} - [ ${gpu.name} ]`;
         const vramFields = [];
         if (gpu.vramUsedBytes && gpu.vramTotalBytes) {
             const usedMB = gpu.vramUsedBytes / 1000000;
             const totalGB = gpu.vramTotalBytes / 1000000000;
             const load = Math.round((gpu.vramUsedBytes / gpu.vramTotalBytes) * 100);
-            const vramEmoji = this._getStatusEmoji(load, [90, 70, 50, 30]);
-            vramFields.push(`${vramEmoji} Memory Usage: ${usedMB.toFixed(2)} MB / ${totalGB.toFixed(2)} GB | ${load}%`);
+            const vramMarker = this._getStatusMarker(load, [90, 70, 50, 30]);
+            vramFields.push(`${vramMarker} Memory Usage: ${usedMB.toFixed(2)} MB / ${totalGB.toFixed(2)} GB | ${load}%`);
         } else if (gpu.vramUsed && gpu.vramTotal) {
             const load = Math.round((parseInt(gpu.vramUsed) / parseInt(gpu.vramTotal)) * 100);
-            const vramEmoji = this._getStatusEmoji(load, [90, 70, 50, 30]);
-            vramFields.push(`${vramEmoji} VRAM: ${gpu.vramUsed}MB / ${gpu.vramTotal}MB | ${load}% |`);
+            const vramMarker = this._getStatusMarker(load, [90, 70, 50, 30]);
+            vramFields.push(`${vramMarker} VRAM: ${gpu.vramUsed}MB / ${gpu.vramTotal}MB | ${load}% |`);
         }
         if (gpu.temp) {
             const tempNum = parseFloat(gpu.temp);
-            const tempEmoji = this._getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
-            vramFields.push(`${tempEmoji} Temp: ${gpu.temp} °C`);
+            const tempMarker = this._getStatusMarker(tempNum, [80, 70, 55, 40, 30, 0]);
+            vramFields.push(`${tempMarker} Temp: ${gpu.temp} °C`);
         }
         if (Number.isFinite(Number(gpu.utilization)))
             vramFields.push(`GPU Utilization: ${gpu.utilization}%`);
@@ -407,13 +407,13 @@ export class GPUModule extends BaseModule {
         let line2 = '';
         if (gpu.clockspeed && gpu.clockspeedMax) {
             const clkNum = parseFloat(gpu.clockspeed);
-            const clkEmoji = this._getStatusEmoji(clkNum, [2000, 1500, 1000, 500, 200, 0]);
-            line2 = `${clkEmoji} Clockspeed: ${gpu.clockspeed} / ${gpu.clockspeedMax} MHz`;
+            const clkMarker = this._getStatusMarker(clkNum, [2000, 1500, 1000, 500, 200, 0]);
+            line2 = `${clkMarker} Clockspeed: ${gpu.clockspeed} / ${gpu.clockspeedMax} MHz`;
         } else if (gpu.clockspeed) {
             const clkNum = parseFloat(gpu.clockspeed);
-            const clkEmoji = this._getStatusEmoji(clkNum, [2000, 1500, 1000, 500, 200, 0]);
+            const clkMarker = this._getStatusMarker(clkNum, [2000, 1500, 1000, 500, 200, 0]);
             const frequency = Number.isFinite(clkNum) ? clkNum.toFixed(2) : gpu.clockspeed;
-            line2 = `${clkEmoji} GPU Frequency: ${frequency} MHz`;
+            line2 = `${clkMarker} GPU Frequency: ${frequency} MHz`;
         }
         return [line1, line2].filter(Boolean).join('\n');
     }

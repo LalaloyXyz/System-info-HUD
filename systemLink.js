@@ -19,7 +19,6 @@ export class SystemLink {
         };
     }
 
-    // Get all system information
     async getAllInfo() {
         try {
             const [
@@ -58,7 +57,6 @@ export class SystemLink {
         }
     }
 
-    // Get specific module info
     async getModuleInfo(moduleName) {
         if (!this.modules[moduleName]) {
             throw new Error(`Unknown module: ${moduleName}`);
@@ -66,47 +64,38 @@ export class SystemLink {
         return await this.modules[moduleName].getInfo();
     }
 
-    // Get CPU information
     async getCPUInfo() {
         return await this.modules.cpu.getCPUInfo();
     }
 
-    // Get GPU information
     async getGPUInfo() {
         return await this.modules.gpu.getGPUInfo();
     }
 
-    // Get memory information
     async getMemoryInfo() {
         return await this.modules.memory.getMemoryInfo();
     }
 
-    // Get storage information
     async getStorageInfo() {
         return await this.modules.storage.getStorageInfo();
     }
 
-    // Get network information
     async getNetworkInfo() {
         return await this.modules.network.getNetworkInfo();
     }
 
-    // Get system information
     async getSystemInfo() {
         return await this.modules.system.getSystemInfo();
     }
 
-    // Get power information
     async getPowerInfo() {
         return await this.modules.power.getPowerInfo();
     }
 
-    // Get uptime
     async getUptime() {
         return await this.modules.system.getUptime();
     }
 
-    // Clear all caches
     clearCache() {
         Object.values(this.modules).forEach(module => {
             if (module.clearCache) {
@@ -115,7 +104,6 @@ export class SystemLink {
         });
     }
 
-    // Get available modules
     getAvailableModules() {
         return Object.keys(this.modules);
     }

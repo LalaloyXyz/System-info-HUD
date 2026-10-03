@@ -6,14 +6,14 @@ export class BaseModule {
         this._cacheTTL = cacheTTL;
     }
 
-    _getStatusEmoji(value, thresholds) {
-        if (value >= thresholds[0]) return "🟥";
-        if (value >= thresholds[1]) return "🟧";
-        if (value >= thresholds[2]) return "🟨";
-        if (value >= thresholds[3]) return "🟩";
-        if (thresholds.length > 4 && value >= thresholds[4]) return "⬜️";
-        if (thresholds.length > 5) return "🟦";
-        return "⬜️";
+    _getStatusMarker(value, thresholds) {
+        if (value >= thresholds[0]) return '[!!!]';
+        if (value >= thresholds[1]) return '[!!]';
+        if (value >= thresholds[2]) return '[!]';
+        if (value >= thresholds[3]) return '[+]';
+        if (thresholds.length > 4 && value >= thresholds[4]) return '[-]';
+        if (thresholds.length > 5) return '[·]';
+        return '[-]';
     }
 
     _isCacheValid() {

@@ -272,18 +272,18 @@ export class CPUModule extends BaseModule {
                 const physicalCoreId = processorToCoreMap[i] || "0";
                 const temp = coreTemps[physicalCoreId] || "N/A";
                 
-                const speedEmoji = this._getStatusEmoji(loadPercent, [90, 70, 50, 30]);
+                const speedMarker = this._getStatusMarker(loadPercent, [90, 70, 50, 30]);
 
                 const tempNum = parseFloat(temp);
-                const tempEmoji = this._getStatusEmoji(tempNum, [80, 70, 55, 40, 30, 0]);
+                const tempMarker = this._getStatusMarker(tempNum, [80, 70, 55, 40, 30, 0]);
                 
                 const speedStr = `${speed} MHz`.padEnd(10);
-                const tempStr = `|  ${coreload}%  |   ${tempEmoji} Temp   ${temp} °C`;
+                const tempStr = `|  ${coreload}%  |   ${tempMarker} Temp   ${temp} °C`;
                 
                 if (speed < 1000) 
-                    result.push(`${speedEmoji} ${coreName}       ${speedStr}   ${tempStr}`);
+                    result.push(`${speedMarker} ${coreName}       ${speedStr}   ${tempStr}`);
                 else 
-                    result.push(`${speedEmoji} ${coreName}     ${speedStr}    ${tempStr}`);
+                    result.push(`${speedMarker} ${coreName}     ${speedStr}    ${tempStr}`);
 
                 coreDetails.push({
                     index: i,

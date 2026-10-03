@@ -32,6 +32,7 @@ export class UIManager {
         this._systemLink = systemLink;
         this._main_screen = null;
         this._updateTimeoutId = null;
+        this._copyButtonTimeoutId = null;
         this._sectionRefreshTimeoutIds = [];
         this._refreshIntervalMs = 1000;
         this._refreshMultipliers = {
@@ -249,17 +250,21 @@ export class UIManager {
             this._label.text = welcomeText.slice(0, i);
             i++;
             if (i > welcomeText.length) {
+                this._removeLabelTimeout(typingId);
                 let pauseId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 5555, () => {
+                    this._removeLabelTimeout(pauseId);
                     let j = welcomeText.length;
                     let eraseId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
                         j--;
                         this._label.text = welcomeText.slice(0, j);
                         if (j === 0) {
+                            this._removeLabelTimeout(eraseId);
                             let k = 1;
                             let infoId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, typingInterval, () => {
                                 this._label.text = infoText.slice(0, k);
                                 k++;
                                 if (k > infoText.length) {
+                                    this._removeLabelTimeout(infoId);
                                     return GLib.SOURCE_REMOVE;
                                 }
                                 return GLib.SOURCE_CONTINUE;
@@ -309,6 +314,10 @@ export class UIManager {
         });
 
         Main.panel.addToStatusArea(this._extension.uuid, this._indicator);
+    }
+
+    _removeLabelTimeout(timeoutId) {
+        this._labelTimeoutIds = this._labelTimeoutIds.filter(id => id !== timeoutId);
     }
 
     _toggleMainScreenFromIndicator() {
@@ -750,7 +759,9 @@ export class UIManager {
 
         const text = [
             'SYSTEM SNAPSHOT FOR AI ANALYSIS',
-            'Analyze likely performance or thermal bottlenecks from the measurements below. Distinguish measured facts from hypotheses, and state what additional data would help. “N/A” means unavailable.',
+            'Analyze likely performance or thermal bottlenecks from the measurements below. ' +
+            'Distinguish measured facts from hypotheses, and state what additional data would help. ' +
+            '“N/A” means unavailable.',
             '',
             'SYSTEM',
             `Hostname and uptime: ${info.uptime || 'Unknown'}`,
@@ -798,7 +809,10 @@ export class UIManager {
                 icon_name: 'emblem-ok-symbolic',
                 icon_size: 16,
             }));
-            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
+            if (this._copyButtonTimeoutId)
+                GLib.source_remove(this._copyButtonTimeoutId);
+            this._copyButtonTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
+                this._copyButtonTimeoutId = null;
                 if (this._copyButton)
                     this._copyButton.set_child(new St.Icon({
                         gicon: Gio.icon_new_for_string(`${this._extension.path}/assets/copy-symbolic.svg`),
@@ -1379,6 +1393,11 @@ export class UIManager {
         if (this._osHoverTimeoutId) {
             GLib.source_remove(this._osHoverTimeoutId);
             this._osHoverTimeoutId = null;
+        }
+
+        if (this._copyButtonTimeoutId) {
+            GLib.source_remove(this._copyButtonTimeoutId);
+            this._copyButtonTimeoutId = null;
         }
     }
 }

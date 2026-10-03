@@ -44,7 +44,7 @@ export class MemoryModule extends BaseModule {
             const cacheGB = (buff_cache / 1024 / 1024).toFixed(1);
             const percentNum = (used / total) * 100;
             const percent = percentNum.toFixed(1);
-            const loadEmoji = this._getStatusEmoji(percentNum, [90, 70, 50, 30]);
+            const loadMarker = this._getStatusMarker(percentNum, [90, 70, 50, 30]);
             const swapTotalGB = (swapTotal / 1024 / 1024).toFixed(1);
             const swapUsedGB = (swapUsed / 1024 / 1024).toFixed(1);
             const swapPercentNum = swapTotal > 0 ? (swapUsed / swapTotal) * 100 : 0;
@@ -55,7 +55,7 @@ export class MemoryModule extends BaseModule {
                 use: `${usedGB}`,
                 percent: `${percent}%`,
                 cache: `${cacheGB} GB`,
-                loadEmoji,
+                loadMarker,
                 swapUse: `${swapUsedGB}`,
                 swapMax: `${swapTotalGB} GB`,
                 swapPercent: `${swapPercent}%`

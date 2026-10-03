@@ -23,9 +23,9 @@ export class StorageModule extends BaseModule {
                     if (!filesystem.startsWith("/dev/")) continue;
 
                     let percent = parseInt(use_percent.replace('%', ''));
-                    let loadEmoji = this._getStatusEmoji(percent, [80, 60, 50, 40]);
+                    let loadMarker = this._getStatusMarker(percent, [80, 60, 50, 40]);
 
-                    result.push(`- ${filesystem} (  ${mount}  )\n${loadEmoji} [ ${used} / ${size} ] [${use_percent}] Avail ${available}\n`);
+                    result.push(`- ${filesystem} (  ${mount}  )\n${loadMarker} [ ${used} / ${size} ] [${use_percent}] Avail ${available}\n`);
                 }
             }
 
