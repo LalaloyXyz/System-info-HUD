@@ -98,13 +98,16 @@ export class SystemLink {
 
     clearCache() {
         Object.values(this.modules).forEach(module => {
-            if (module.clearCache) {
-                module.clearCache();
-            }
+            module.clearCache();
         });
     }
 
     getAvailableModules() {
         return Object.keys(this.modules);
+    }
+
+    destroy() {
+        for (const module of Object.values(this.modules))
+            module.destroy();
     }
 } 

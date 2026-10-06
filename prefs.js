@@ -3,13 +3,9 @@ import Gio from 'gi://Gio';
 import Gdk from 'gi://Gdk';
 import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
+import { getCpuCoreColor } from './modules/coreColors.js';
 
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
-
-const DEFAULT_CPU_COLORS = [
-    '#944cf2', '#5940f2', '#407aff', '#38b8ff', '#33e6e0', '#2ed18c',
-    '#73e040', '#c7eb2e', '#ffd12e', '#ff991f', '#ff6129', '#f22947'
-];
 
 function getCpuCoreCount() {
     let coreCount = GLib.get_num_processors();
@@ -185,10 +181,9 @@ export default class SystemHUDPreferences extends ExtensionPreferences {
         });
         const coreCount = getCpuCoreCount();
         const savedColors = settings.get_strv('cpu-core-colors');
-        const defaultColor = index => DEFAULT_CPU_COLORS[index % DEFAULT_CPU_COLORS.length];
         for (let index = 0; index < coreCount; index++) {
             const color = new Gdk.RGBA();
-            color.parse(savedColors[index] || defaultColor(index));
+            color.parse(savedColors[index] || getCpuCoreColor(index));
             const colorButton = new Gtk.ColorDialogButton({ dialog: new Gtk.ColorDialog() });
             colorButton.set_rgba(color);
 
@@ -201,7 +196,7 @@ export default class SystemHUDPreferences extends ExtensionPreferences {
                 const toHex = value => Math.round(value * 255).toString(16).padStart(2, '0');
                 const colors = settings.get_strv('cpu-core-colors');
                 while (colors.length < coreCount)
-                    colors.push(defaultColor(colors.length));
+                    colors.push(getCpuCoreColor(colors.length));
                 colors[index] = `#${toHex(selected.red)}${toHex(selected.green)}${toHex(selected.blue)}`;
                 settings.set_strv('cpu-core-colors', colors);
             });

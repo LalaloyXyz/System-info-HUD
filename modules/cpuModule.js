@@ -1,26 +1,36 @@
 import { BaseModule } from './baseModule.js';
+import GLib from 'gi://GLib';
 
 export class CPUModule extends BaseModule {
     constructor() {
         super(1000); // 1 second cache TTL
         this._networkInterface = { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 };
-        // cache results of which/executable checks to avoid repeating them
         this._execCache = {};
         this._cpuStatSnapshot = null;
     }
 
-    // cache-check helper for executables
     async _hasExecutable(bin) {
         if (this._execCache[bin] !== undefined) return this._execCache[bin];
-        try {
-            const out = await this._executeCommand(['which', bin]);
-            const exists = !!(out && out.trim());
-            this._execCache[bin] = exists;
-            return exists;
-        } catch (e) {
-            this._execCache[bin] = false;
-            return false;
+        this._execCache[bin] = GLib.find_program_in_path(bin) !== null;
+        return this._execCache[bin];
+    }
+
+    async _getIntegratedGpuTemperature() {
+        const temperatures = [];
+        for (const hwmon of await this._listDirs('/sys/class/hwmon', /^hwmon\d+$/)) {
+            const path = `/sys/class/hwmon/${hwmon}`;
+            const name = (await this._readFile(`${path}/name`, true)).trim();
+            // amdgpu exposes northbridge voltage only on APUs, not discrete GPUs.
+            if (name !== 'amdgpu' || (await this._readFile(`${path}/in1_label`, true)).trim() !== 'vddnb')
+                continue;
+            const reading = (await this._readFile(`${path}/temp1_input`, true)).trim();
+            if (!/^-?\d+$/.test(reading))
+                continue;
+            const temperature = Number(reading) / 1000;
+            if (Number.isFinite(temperature))
+                temperatures.push(temperature.toFixed(0));
         }
+        return temperatures.length === 1 ? temperatures[0] : null;
     }
 
     async _getCoreLoads() {
@@ -78,7 +88,8 @@ export class CPUModule extends BaseModule {
                 } catch (e) {
                     lscpuText = '';
                 }
-            } else {
+            }
+            if (!lscpuText.trim()) {
                 try {
                     lscpuText = await this._readFile('/proc/cpuinfo');
                 } catch (e) {
@@ -88,10 +99,10 @@ export class CPUModule extends BaseModule {
             
             let modelName = "Unknown CPU";
             const modelNamePatterns = [
-                /Model name:\s+(.+)/,   // Intel, AMD, some ARM
-                /Model:\s+(.+)/,        // Some AMD/older CPUs
-                /CPU:\s+(.+)/,          // Fallback
-                /Hardware:\s+(.+)/,     // ARM
+                /^(?:Model name|model name)\s*:\s+(.+)/m,   // Intel, AMD, some ARM
+                /^Model\s*:\s+(.+)/m,        // Some AMD/older CPUs
+                /^(?:CPU|Processor)\s*:\s+(.+)/m,          // Fallback
+                /^Hardware\s*:\s+(.+)/m,     // ARM
             ];
             
             for (const pattern of modelNamePatterns) {
@@ -115,6 +126,10 @@ export class CPUModule extends BaseModule {
                 }
             }
 
+            const processorIds = Object.keys(coreLoads).map(Number);
+            if (processorIds.length)
+                coreCount = processorIds.length;
+
             // Max frequency: try lscpu, then fallback to /proc/cpuinfo
             let cpumax = 0;
             const cpumaxMatch = lscpuText.match(/CPU max MHz:\s+([\d.]+)/);
@@ -133,7 +148,6 @@ export class CPUModule extends BaseModule {
                 }
             }
 
-            // Get CPU frequencies and core mapping
             let freqText = '';
             try {
                 freqText = await this._readFile('/proc/cpuinfo');
@@ -143,59 +157,27 @@ export class CPUModule extends BaseModule {
             
             const coreSpeeds = [];
             const processorToCoreMap = {};
-            const lines = freqText.split('\n');
-            let currentProcessorId = null;
-            let isAMD = modelName.toLowerCase().includes('amd');
-
-            // Get current CPU frequencies
-            try {
-                const freqOut = await this._executeCommand(['sh', '-c', `
-                    for i in /sys/devices/system/cpu/cpu*/cpufreq/; do
-                        if [ -f "$i/scaling_cur_freq" ]; then
-                            cat "$i/scaling_cur_freq";
-                        elif [ -f "$i/cpuinfo_cur_freq" ]; then
-                            cat "$i/cpuinfo_cur_freq";
-                        fi;
-                    done | sort -V
-                `]);
-
-                const frequencies = freqOut.trim().split('\n');
-                frequencies.forEach((freq, index) => {
-                    if (freq) {
-                        coreSpeeds[index] = Math.floor(parseInt(freq) / 1000); // Convert kHz to MHz
-                    }
-                });
-            } catch (e) {
-                logError(e, 'System HUD: Error reading CPU frequencies');
+            // Keep CPU IDs with readings: sorting frequencies loses core identity.
+            for (const block of freqText.split(/\n\s*\n/)) {
+                const id = block.match(/^processor\s*:\s*(\d+)/m)?.[1];
+                if (id === undefined)
+                    continue;
+                const core = block.match(/^core id\s*:\s*(\d+)/m)?.[1] ?? id;
+                const socket = block.match(/^physical id\s*:\s*(\d+)/m)?.[1] ?? '0';
+                processorToCoreMap[id] = { core, socket };
+                const mhz = block.match(/^cpu MHz\s*:\s*([\d.]+)/m)?.[1];
+                coreSpeeds[id] = mhz ? Math.floor(Number(mhz)) : 0;
             }
+            const cpuIds = processorIds.length ? processorIds : Array.from({ length: coreCount }, (_, i) => i);
+            await Promise.all(cpuIds.map(async id => {
+                const path = `/sys/devices/system/cpu/cpu${id}/cpufreq/`;
+                const text = (await this._readFile(`${path}scaling_cur_freq`, true)).trim()
+                    || (await this._readFile(`${path}cpuinfo_cur_freq`, true)).trim();
+                const frequency = Number.parseInt(text, 10);
+                if (Number.isFinite(frequency))
+                    coreSpeeds[id] = Math.floor(frequency / 1000);
+            }));
 
-            for (let i = 0; i < coreCount; i++) {
-                if (!coreSpeeds[i]) {
-                    coreSpeeds[i] = 0;
-                }
-            }
-
-            // Unified core mapping logic for both AMD and Intel
-            for (const line of lines) {
-                if (line.startsWith('processor')) {
-                    currentProcessorId = line.split(':')[1].trim();
-                } else if (line.startsWith('core id') && currentProcessorId !== null) {
-                    const coreId = line.split(':')[1].trim();
-                    processorToCoreMap[currentProcessorId] = coreId;
-                }
-            }
-
-            const threadsPerCoreMatch = lscpuText.match(/Thread\(s\) per core:\s+(\d+)/);
-            const threadsPerCore = threadsPerCoreMatch ? parseInt(threadsPerCoreMatch[1]) : 2;
-
-            if (isAMD && Object.keys(processorToCoreMap).length === 0) {
-                for (let i = 0; i < coreCount; i++) {
-                    processorToCoreMap[i] = Math.floor(i / threadsPerCore).toString();
-                }
-            }
-
-            // Get temperature data
-            // Only run sensors if available (use exec cache)
             let sensorText = '';
             const hasSensors = await this._hasExecutable('sensors');
             if (hasSensors) {
@@ -207,70 +189,37 @@ export class CPUModule extends BaseModule {
             }
 
             const coreTemps = {};
-            
-            // Universal temperature patterns that work for both Intel and AMD
-            const tempPatterns = [
-                /^\s*Core\s+(\d+):\s*\+?([\d.]+)\s*°?\s*C/mg,           // Standard core temp
-                /^\s*Core\s+\d+\s+\(PECI\s+\d+\):\s*\+?([\d.]+)\s*°?\s*C/mg,  // PECI core temps
-                /^\s*CPU\s+Core\s+(\d+):\s*\+?([\d.]+)\s*°?\s*C/mg,     // Alternative core temp format
-                /^\s*Package\s+id\s+\d+:\s*\+?([\d.]+)\s*°?\s*C/mg,     // Package temp
-                /^\s*Package\s+\d+:\s*\+?([\d.]+)\s*°?\s*C/mg,          // Alternative package temp
-                /^\s*CPU\s+Temperature:\s*\+?([\d.]+)\s*°?\s*C/mg,      // Generic CPU temp
-                // AMD specific patterns
-                /^\s*Tctl:\s*\+?([\d.]+)\s*°?\s*C/mg,                   // AMD Tctl
-                /^\s*Tdie:\s*\+?([\d.]+)\s*°?\s*C/mg,                   // AMD Tdie
-                /^\s*CPU\s+Tctl\/Tdie:\s*\+?([\d.]+)\s*°?\s*C/mg,       // Alternative AMD temp
-                // Intel specific patterns
-                /^\s*Package\s+id\s+0:\s*\+?([\d.]+)\s*°?\s*C/mg,       // Intel package temp
-                /^\s*Core\s+\d+\s+\(PECI\s+\d+\):\s*\+?([\d.]+)\s*°?\s*C/mg,  // Intel PECI
-                /^\s*CPU\s+Package:\s*\+?([\d.]+)\s*°?\s*C/mg           // Intel package temp
-            ];
-            
-            let globalTemp = null;
-            let foundAnyTemp = false;
-            
-            for (const pattern of tempPatterns) {
-                let match;
-                pattern.lastIndex = 0;
-                
-                while ((match = pattern.exec(sensorText)) !== null) {
-                    const coreId = match[1] || '0';
-                    const temp = parseFloat(match[2] || match[1]);
-                    
-                    if (match[1]) {
-                        coreTemps[coreId] = temp.toFixed(0);
-                        foundAnyTemp = true;
-                    } else {
-                        globalTemp = temp;
-                    }
+            const packageTemps = {};
+            // Restrict readings to CPU sensors; a GPU/SSD temperature is not a CPU fallback.
+            for (const section of sensorText.split(/\n\s*\n/)) {
+                if (!/^(?:coretemp|k10temp|zenpower|cpu_thermal|cpu-)/i.test(section.trim()))
+                    continue;
+                const packageId = section.match(/Package\s+id\s+(\d+):/i)?.[1];
+                const isaId = section.match(/^coretemp-isa-([\da-f]+)/i)?.[1];
+                const socket = packageId ?? (isaId ? String(parseInt(isaId, 16)) : '0');
+                if (!packageId && !isaId && new Set(Object.values(processorToCoreMap).map(cpu => cpu.socket)).size > 1)
+                    continue;
+                for (const match of section.matchAll(/^\s*(?:CPU\s+)?Core\s+(\d+)(?:\s+\(PECI\s+\d+\))?:\s*\+?(-?[\d.]+)\s*°?\s*C/gmi))
+                    coreTemps[`${socket}:${match[1]}`] = Number(match[2]).toFixed(0);
+                const packageMatch = section.match(/^\s*(?:Package\s+(?:id\s+)?\d+|Tdie|Tctl|CPU(?:\s+Temperature|\s+Package|\s+Tctl\/Tdie)?|temp1):\s*\+?(-?[\d.]+)\s*°?\s*C/mi);
+                if (packageMatch) {
+                    const temp = Number(packageMatch[1]);
+                    packageTemps[socket] = temp.toFixed(0);
                 }
-            }
-            
-            if (!foundAnyTemp && globalTemp) {
-                for (let i = 0; i < coreCount; i++) {
-                    coreTemps[i.toString()] = globalTemp.toFixed(0);
-                }                
             }
 
-            if (Object.keys(coreTemps).length === 0) {
-                const anyTempMatch = sensorText.match(/\+?([\d.]+)\s*°?\s*C/);
-                if (anyTempMatch) {
-                    const temp = parseFloat(anyTempMatch[1]);
-                    for (let i = 0; i < Math.ceil(coreCount / 2); i++) {
-                        coreTemps[i.toString()] = temp.toFixed(0);
-                    }
-                }
-            }
-    
+            const sockets = new Set(Object.values(processorToCoreMap).map(cpu => cpu.socket));
+            const igpuTemp = !Object.keys(coreTemps).length && !Object.keys(packageTemps).length && sockets.size <= 1
+                ? await this._getIntegratedGpuTemperature() : null;
             const result = [];
             const coreDetails = [];
-            for (let i = 0; i < coreCount; i++) {
+            for (const i of cpuIds) {
                 const coreName = `Core-${String(i).padStart(2, '0')}    |`;
                 const speed = coreSpeeds[i] || 0;
                 const loadPercent = coreLoads[i] ?? 0;
                 const coreload = String(loadPercent).padStart(2, '0');
-                const physicalCoreId = processorToCoreMap[i] || "0";
-                const temp = coreTemps[physicalCoreId] || "N/A";
+                const { core, socket } = processorToCoreMap[i] ?? { core: String(i), socket: '0' };
+                const temp = coreTemps[`${socket}:${core}`] ?? packageTemps[socket] ?? igpuTemp ?? 'N/A';
                 
                 const speedMarker = this._getStatusMarker(loadPercent, [90, 70, 50, 30]);
 
@@ -298,7 +247,8 @@ export class CPUModule extends BaseModule {
                 cpu: modelName,
                 core: coreCount,
                 coreSpeeds: result,
-                coreDetails
+                coreDetails,
+                temperatureSource: igpuTemp !== null ? 'igpu' : 'cpu'
             };
     
             this._updateCache(finalResult);

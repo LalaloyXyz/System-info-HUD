@@ -5,6 +5,7 @@ import Soup from 'gi://Soup';
 export class NetworkModule extends BaseModule {
     constructor() {
         super(1000); // 1 second cache TTL
+        this._session = new Soup.Session({ timeout: 3 });
         this._networkInterface = { lastIface: null, lastRx: 0, lastTx: 0, lastTimestamp: 0 };
         this._execCache = {};
         this._publicIPInFlight = false;
@@ -32,12 +33,14 @@ export class NetworkModule extends BaseModule {
 
     _ensurePublicIPRefresh(now = Date.now()) {
         const cached = this._getCachedPublicIP(now);
-        if (cached || this._publicIPInFlight)
+        if (cached || this._publicIPInFlight || this._cancellable.is_cancelled())
             return;
 
         this._publicIPInFlight = true;
         this._fetchAndCachePublicIP()
             .catch(e => {
+                if (this._cancellable.is_cancelled())
+                    return;
                 logError(e, 'System HUD: Failed to refresh public IP');
                 this._cacheData.publicIP = {
                     data: 'No internet',
@@ -49,17 +52,11 @@ export class NetworkModule extends BaseModule {
     }
 
     async _fetchAndCachePublicIP() {
-        const session = new Soup.Session();
-        try {
-            // libsoup timeout is in seconds; keep it low so UI isn't waiting on this indefinitely.
-            session.timeout = 3;
-        } catch (e) {
-            // ignore if property is not available
-        }
+        const session = this._session;
         const message = Soup.Message.new('GET', 'https://api.ipify.org');
 
         const response = await new Promise((resolve, reject) => {
-            session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (sess, res) => {
+            session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, this._cancellable, (sess, res) => {
                 try {
                     const bytes = sess.send_and_read_finish(res);
                     resolve(bytes ? bytes.get_data() : null);
@@ -74,8 +71,8 @@ export class NetworkModule extends BaseModule {
 
         const decoder = new TextDecoder();
         const ip = decoder.decode(response).trim();
-        if (!ip)
-            throw new Error('Public IP service returned an empty response');
+        if (message.status_code !== Soup.Status.OK || !GLib.hostname_is_ip_address(ip))
+            throw new Error('Public IP service returned an invalid response');
 
         this._cacheData.publicIP = {
             data: ip,
@@ -84,18 +81,17 @@ export class NetworkModule extends BaseModule {
         return ip;
     }
 
+    destroy() {
+        super.destroy();
+        this._session.abort();
+        this._session = null;
+    }
+
     async _hasExecutable(bin) {
         if (this._execCache[bin] !== undefined)
             return this._execCache[bin];
-        try {
-            const out = await this._executeCommand(['which', bin]);
-            const exists = !!(out && out.trim());
-            this._execCache[bin] = exists;
-            return exists;
-        } catch (e) {
-            this._execCache[bin] = false;
-            return false;
-        }
+        this._execCache[bin] = GLib.find_program_in_path(bin) !== null;
+        return this._execCache[bin];
     }
 
     async getNetworkInfo() {
@@ -195,7 +191,7 @@ export class NetworkModule extends BaseModule {
                 // Fedora/NetworkManager fallback
                 if (await this._hasExecutable('nmcli')) {
                     const nmOut = await this._executeCommand([
-                        'nmcli', '-t', '-f', 'ACTIVE,SSID', 'dev', 'wifi'
+                        'nmcli', '-t', '--escape', 'no', '-f', 'ACTIVE,SSID', 'dev', 'wifi'
                     ]);
                     const active = nmOut.split('\n').find(line => line.startsWith('yes:'));
                     if (active)
@@ -246,7 +242,7 @@ export class NetworkModule extends BaseModule {
         }
     
         try {
-            const output = await this._executeCommand(['cat', '/proc/net/dev']);
+            const output = await this._readFile('/proc/net/dev');
             const lines = output.split('\n').slice(2);
             let activeIface = null;
             let maxTraffic = 0;
@@ -283,8 +279,8 @@ export class NetworkModule extends BaseModule {
             } else if (activeIface === this._networkInterface.lastIface) {
                 const dt = (now - this._networkInterface.lastTimestamp) / 1000;
                 if (dt > 0) {
-                    const rxDiff = rx - this._networkInterface.lastRx;
-                    const txDiff = tx - this._networkInterface.lastTx;
+                    const rxDiff = Math.max(0, rx - this._networkInterface.lastRx);
+                    const txDiff = Math.max(0, tx - this._networkInterface.lastTx);
                     
                     const rxSpeed = rxDiff / dt;
                     const txSpeed = txDiff / dt;

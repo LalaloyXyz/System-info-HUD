@@ -1,9 +1,12 @@
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 
 export class BaseModule {
     constructor(cacheTTL = 5000) {
         this._cache = { data: null, timestamp: 0 };
         this._cacheTTL = cacheTTL;
+        this._cancellable = new Gio.Cancellable();
+        this._commands = new Map();
     }
 
     _getStatusMarker(value, thresholds) {
@@ -18,7 +21,7 @@ export class BaseModule {
 
     _isCacheValid() {
         const now = Date.now();
-        return this._cache.data &&
+        return this._cache.data !== null &&
                (now - this._cache.timestamp < this._cacheTTL);
     }
 
@@ -33,16 +36,49 @@ export class BaseModule {
         this._cache = { data: null, timestamp: 0 };
     }
 
-    async _executeCommand(argv) {
+    async _listDirs(path, pattern) {
+        const names = [];
         try {
-            const subprocess = new Gio.Subprocess({
-                argv,
+            const enumerator = Gio.File.new_for_path(path).enumerate_children(
+                'standard::name', Gio.FileQueryInfoFlags.NONE, null);
+            try {
+                let info;
+                while ((info = enumerator.next_file(null))) {
+                    if (pattern.test(info.get_name()))
+                        names.push(info.get_name());
+                }
+            } finally {
+                enumerator.close(null);
+            }
+        } catch (_) {
+            // Optional sysfs directories are absent on some drivers.
+        }
+        return names.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    }
+
+    async _executeCommand(argv) {
+        if (this._cancellable.is_cancelled())
+            return '';
+        try {
+            const launcher = new Gio.SubprocessLauncher({
                 flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
             });
-            subprocess.init(null);
+            launcher.setenv('LC_ALL', 'C', true);
+            const subprocess = launcher.spawnv(argv);
 
             return await new Promise((resolve, reject) => {
-                subprocess.communicate_utf8_async(null, null, (proc, res) => {
+                let timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10000, () => {
+                    timeoutId = 0;
+                    this._commands.set(subprocess, 0);
+                    subprocess.force_exit();
+                    return GLib.SOURCE_REMOVE;
+                });
+                this._commands.set(subprocess, timeoutId);
+                subprocess.communicate_utf8_async(null, this._cancellable, (proc, res) => {
+                    timeoutId = this._commands.get(proc);
+                    if (timeoutId)
+                        GLib.Source.remove(timeoutId);
+                    this._commands.delete(proc);
                     try {
                         const [successful, stdout, stderr] = proc.communicate_utf8_finish(res);
                         if (!successful || !proc.get_successful()) {
@@ -57,16 +93,19 @@ export class BaseModule {
                 });
             });
         } catch (e) {
-            logError(e, `Error executing: ${argv.join(" ")}`);
+            if (!this._cancellable.is_cancelled())
+                logError(e, `Error executing: ${argv.join(" ")}`);
             return "";
         }
     }
 
-    async _readFile(path) {
+    async _readFile(path, optional = false) {
+        if (this._cancellable.is_cancelled())
+            return '';
         try {
             const file = Gio.File.new_for_path(path);
             const [ok, contents] = await new Promise((resolve, reject) => {
-                file.load_contents_async(null, (f, res) => {
+                file.load_contents_async(this._cancellable, (f, res) => {
                     try {
                         resolve(f.load_contents_finish(res));
                     } catch (e) {
@@ -74,10 +113,22 @@ export class BaseModule {
                     }
                 });
             });
-            return ok ? contents.toString() : "";
+            return ok ? new TextDecoder().decode(contents) : "";
         } catch (e) {
-            logError(e, `Failed to read file: ${path}`);
+            if (!optional && !this._cancellable.is_cancelled())
+                logError(e, `Failed to read file: ${path}`);
             return "";
         }
+    }
+
+    destroy() {
+        this._cancellable.cancel();
+        for (const [subprocess, timeoutId] of this._commands) {
+            if (timeoutId)
+                GLib.Source.remove(timeoutId);
+            subprocess.force_exit();
+        }
+        this._commands.clear();
+        this.clearCache();
     }
 }

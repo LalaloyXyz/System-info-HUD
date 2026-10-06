@@ -4,6 +4,7 @@ import GLib from 'gi://GLib';
 export class ProcessModule {
     constructor() {
         this._cancellable = new Gio.Cancellable();
+        this._subprocesses = new Set();
         const credentials = new Gio.Credentials();
         this._uid = credentials.get_unix_user();
         this._pid = credentials.get_unix_pid();
@@ -11,14 +12,17 @@ export class ProcessModule {
     }
 
     async _execute(argv) {
+        this._cancellable.set_error_if_cancelled();
         const launcher = new Gio.SubprocessLauncher({
             flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
         });
         launcher.setenv('LC_ALL', 'C', true);
         const proc = launcher.spawnv(argv);
+        this._subprocesses.add(proc);
         const pid = Number(proc.get_identifier());
         return new Promise((resolve, reject) => {
             proc.communicate_utf8_async(null, this._cancellable, (subprocess, result) => {
+                this._subprocesses.delete(subprocess);
                 try {
                     const [, stdout, stderr] = subprocess.communicate_utf8_finish(result);
                     if (!subprocess.get_successful())
@@ -109,5 +113,9 @@ export class ProcessModule {
 
     destroy() {
         this._cancellable.cancel();
+        for (const subprocess of this._subprocesses)
+            subprocess.force_exit();
+        this._subprocesses.clear();
+        this._gpuSnapshot = null;
     }
 }

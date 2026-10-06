@@ -6,7 +6,6 @@ export class ThemeManager {
             schema_id: 'org.gnome.desktop.interface'
         });
         this._themeChangedHandlers = [];
-        // ID returned by Gio.Settings.connect for the color-scheme change
         this._settingsSignalId = null;
     }
 
@@ -16,7 +15,7 @@ export class ThemeManager {
         return {
             background: isDarkTheme ? '#1c1c1e' : '#f2f2f7',
             text: isDarkTheme ? '#f5f5f7' : '#1c1c1e',
-            secondaryText: isDarkTheme ? '#a1a1a6' : '#6c6c70',
+            secondaryText: isDarkTheme ? '#b0b0b6' : '#5f5f66',
             accent: isDarkTheme ? '#38383a' : '#d1d1d6',
             surface: isDarkTheme ? '#2c2c2e' : '#ffffff',
             isDark: isDarkTheme
@@ -27,14 +26,12 @@ export class ThemeManager {
         const handlerId = this._themeChangedHandlers.length;
         this._themeChangedHandlers.push(handler);
 
-        // If this is the first handler, connect to Gio.Settings change signal
         if (this._settingsSignalId === null) {
             this._settingsSignalId = this._themeSettings.connect('changed::color-scheme', () => {
                 this.emitThemeChanged();
             });
         }
 
-        // Call the handler immediately so UI can apply current theme right away
         try {
             handler();
         } catch (e) {
@@ -50,7 +47,6 @@ export class ThemeManager {
             this._themeChangedHandlers[handlerId] = null;
         }
 
-        // If no handlers left, disconnect the Gio.Settings signal
         const anyRemaining = this._themeChangedHandlers.some(h => !!h);
         if (!anyRemaining && this._settingsSignalId !== null) {
             this._themeSettings.disconnect(this._settingsSignalId);
@@ -74,14 +70,14 @@ export class ThemeManager {
 
 export function updateCPUSectionStyle({ cpuHead, cpuName, coreBox }, themeColors, St) {
     if (cpuHead)
-        cpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
+        cpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`);
     if (cpuName)
-        cpuName.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 14px;`);
+        cpuName.set_style(`color: ${themeColors.text}; font-weight: 600; font-size: 14px;`);
     if (coreBox) {
         const children = coreBox.get_children();
         for (let i = 0; i < children.length; i++) {
             if (children[i] instanceof St.Label) {
-                children[i].set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 11px;`);
+                children[i].set_style(`color: ${themeColors.text}; font-weight: 500; font-size: 11px;`);
             }
         }
     }
@@ -89,68 +85,70 @@ export function updateCPUSectionStyle({ cpuHead, cpuName, coreBox }, themeColors
 
 export function updateNetworkSectionStyle({ wifiSpeedLabel, wifiLabel, publicIPLabel, publicIPDescLabel, localIPLabel, localIPDescLabel }, themeColors) {
     if (wifiSpeedLabel)
-        wifiSpeedLabel.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 13px;`);
+        wifiSpeedLabel.set_style(`color: ${themeColors.text}; font-weight: 600; font-size: 13px;`);
     if (wifiLabel)
-        wifiLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
+        wifiLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`);
     if (publicIPLabel)
-        publicIPLabel.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 12px;`);
+        publicIPLabel.set_style(`color: ${themeColors.text}; font-weight: 500; font-size: 12px;`);
     if (publicIPDescLabel)
-        publicIPDescLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 12px;`);
+        publicIPDescLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: 500; font-size: 12px;`);
     if (localIPLabel)
-        localIPLabel.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 12px;`);
+        localIPLabel.set_style(`color: ${themeColors.text}; font-weight: 500; font-size: 12px;`);
     if (localIPDescLabel)
-        localIPDescLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 12px;`);
+        localIPDescLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: 500; font-size: 12px;`);
 }
 
 export function updateMemorySectionStyle({ memoryUse, memoryCache, memoryHead }, themeColors) {
     if (memoryUse)
-        memoryUse.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 12px;`);
+        memoryUse.set_style(`color: ${themeColors.text}; font-weight: 500; font-size: 12px;`);
     if (memoryCache)
-        memoryCache.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 12px;`);
+        memoryCache.set_style(`color: ${themeColors.text}; font-weight: 500; font-size: 12px;`);
     if (memoryHead)
-        memoryHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
+        memoryHead.set_style(`color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`);
 }
 
 export function updateStorageSectionStyle({ storageBox, storageHead }, themeColors) {
     if (storageBox) {
         const children = storageBox.get_children();
         for (let i = 0; i < children.length; i++) {
-            children[i].set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 11px;`);
+            children[i].set_style(`color: ${themeColors.text}; font-weight: 500; font-size: 11px;`);
         }
     }
     if (storageHead)
-        storageHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
+        storageHead.set_style(`color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`);
 }
 
 export function updatePowerSectionStyle({ powerShow, powerHead }, themeColors) {
     if (powerShow)
-        powerShow.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 12px;`);
+        powerShow.set_style(`color: ${themeColors.text}; font-weight: 500; font-size: 12px;`);
     if (powerHead)
-        powerHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
+        powerHead.set_style(`color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`);
 }
 
-export function updateOSSectionStyle({ device_OS, device_Kernel }, themeColors) {
+export function updateOSSectionStyle({ osPrefix, device_OS, device_Kernel }, themeColors) {
+    if (osPrefix)
+        osPrefix.set_style(`color: ${themeColors.text}; font-weight: 600; font-size: 18px;`);
     if (device_OS)
-        device_OS.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 18px;`);
+        device_OS.set_style(`color: ${themeColors.text}; font-weight: 600; font-size: 18px;`);
     if (device_Kernel)
-        device_Kernel.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 16px;`);
+        device_Kernel.set_style(`color: ${themeColors.text}; font-weight: 600; font-size: 16px;`);
 }
 
 export function updateDeviceSectionStyle({ deviceWithUptime, deviceLabel }, themeColors) {
     if (deviceWithUptime)
-        deviceWithUptime.set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 16px;`);
+        deviceWithUptime.set_style(`color: ${themeColors.text}; font-weight: 600; font-size: 16px;`);
     if (deviceLabel)
-        deviceLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 14px;`);
+        deviceLabel.set_style(`color: ${themeColors.secondaryText}; font-weight: 600; font-size: 14px;`);
 }
 
 export function updateGPUSectionStyle({ gpuHead, gpuBox }, themeColors, St) {
     if (gpuHead)
-        gpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
+        gpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`);
     if (gpuBox) {
         const children = gpuBox.get_children();
         for (let i = 0; i < children.length; i++) {
             if (children[i] instanceof St.Label) {
-                children[i].set_style(`color: ${themeColors.text}; font-weight: bold; font-size: 11px;`);
+                children[i].set_style(`color: ${themeColors.text}; font-weight: 500; font-size: 11px;`);
             }
         }
     }

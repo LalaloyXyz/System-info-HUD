@@ -11,7 +11,6 @@ export class PowerModule extends BaseModule {
         }
 
         try {
-            // First get the battery device path
             const batteryList = await this._executeCommand(['upower', '-e']);
             const batteryPaths = batteryList
                 .split('\n')
@@ -19,15 +18,21 @@ export class PowerModule extends BaseModule {
                 .filter(Boolean);
             // Prefer the laptop battery over Bluetooth/HID batteries, which
             // can also appear in `upower -e` and report a different state.
-            const batteryPath = batteryPaths.find(line => /\/battery_BAT\d+$/i.test(line))
-                || batteryPaths.find(line => /\/battery_/i.test(line));
-            
-            if (!batteryPath) {
+            const candidates = batteryPaths.filter(line => /\/battery_/i.test(line))
+                .sort((a, b) => Number(/\/battery_BAT\d+$/i.test(b)) - Number(/\/battery_BAT\d+$/i.test(a)));
+            let output = '';
+            for (const path of candidates) {
+                const info = await this._executeCommand(['upower', '-i', path]);
+                if (/^\s*power supply:\s*yes\s*$/im.test(info) && !/^\s*present:\s*no\s*$/im.test(info)) {
+                    output = info;
+                    break;
+                }
+            }
+            if (!output) {
+                this._updateCache('No battery found');
                 return "No battery found";
             }
 
-            // Now get the battery info
-            const output = await this._executeCommand(['upower', '-i', batteryPath]);
             let state = "";
             let percentage = "";
             let wattage = "";

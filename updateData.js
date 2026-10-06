@@ -1,12 +1,12 @@
-// updateData.js
-// Efficient, dynamic UI update logic for all sections
+import { verticalBox, horizontalBox } from './modules/shellCompat.js';
 
 import Clutter from 'gi://Clutter';
 import Cairo from 'cairo';
 import GLib from 'gi://GLib';
+import { getCpuCoreColor } from './modules/coreColors.js';
 
-const DETAIL_LABEL_STYLE = 'font-weight: bold; font-size: 11px;';
-const HELP_LABEL_STYLE = 'font-weight: bold; font-size: 10px;';
+const DETAIL_LABEL_STYLE = 'font-weight: 500; font-size: 11px;';
+const HELP_LABEL_STYLE = 'font-weight: 500; font-size: 11px;';
 const cpuGraphActors = new WeakMap();
 const gpuGraphActors = new WeakMap();
 const cpuGraphColors = new WeakMap();
@@ -83,13 +83,13 @@ function updateGraphMotion(graph, history, box) {
 
 const TOOL_HELP = {
     cpuInfo: 'Need: lscpu (util-linux).',
-    cpuTemp: 'Need: sensors (lm-sensors).',
+    cpuTemp: 'CPU temperature unavailable: requires lm-sensors and a supported CPU sensor driver.',
     memory: 'Need: free (procps/procps-ng).',
     storage: 'Need: df (coreutils).',
     localIP: 'Need: ip (iproute2).',
     wifi: 'Need: iwgetid, nmcli, or iw.',
     power: 'Need: upower.',
-    gpu: 'Need: lspci, sensors, nvidia-smi/rocm-smi.'
+    gpu: 'GPU data needs a supported DRM driver; NVIDIA metrics need nvidia-smi.'
 };
 
 function detailLabelStyle(themeColors) {
@@ -137,16 +137,15 @@ function getGreenToRedColor(value, thresholds) {
     return '#28be4b';
 }
 
-function getBatteryColor(percent, state) {
-    if (/full/i.test(state || '') || percent >= 80)
-        return '#28be4b';
-    if (percent >= 50)
-        return '#a8d64a';
+function getBatteryColor(percent, state, themeColors) {
+    const isDark = themeColors?.isDark !== false;
+    if (/full/i.test(state || '') || percent >= 50)
+        return isDark ? '#30d158' : '#198038';
     if (percent >= 25)
-        return '#ffcc33';
+        return isDark ? '#ffd60a' : '#9a6700';
     if (percent >= 15)
-        return '#ff9f45';
-    return '#ff5f57';
+        return isDark ? '#ff9f0a' : '#b45309';
+    return isDark ? '#ff453a' : '#cf222e';
 }
 
 const ACCENT_COLORS = {
@@ -160,26 +159,10 @@ const ACCENT_COLORS = {
     pink: '#ff8bd1'
 };
 
-const CORE_GRAPH_COLORS = [
-    [0.58, 0.30, 0.95],
-    [0.35, 0.25, 0.95],
-    [0.25, 0.48, 1.0],
-    [0.22, 0.72, 1.0],
-    [0.20, 0.90, 0.88],
-    [0.18, 0.82, 0.55],
-    [0.45, 0.88, 0.25],
-    [0.78, 0.92, 0.18],
-    [1.0, 0.82, 0.18],
-    [1.0, 0.60, 0.12],
-    [1.0, 0.38, 0.16],
-    [0.95, 0.16, 0.28]
-];
-
 function getCoreGraphColor(index, customColors = []) {
-    const match = String(customColors[index] || '').match(/^#([\da-f]{6})$/i);
-    if (match)
-        return [0, 2, 4].map(offset => parseInt(match[1].slice(offset, offset + 2), 16) / 255);
-    return CORE_GRAPH_COLORS[index % CORE_GRAPH_COLORS.length];
+    const color = /^#[\da-f]{6}$/i.test(customColors[index] || '')
+        ? customColors[index] : getCpuCoreColor(index);
+    return [1, 3, 5].map(offset => parseInt(color.slice(offset, offset + 2), 16) / 255);
 }
 
 function getCoreGraphCssColor(index, customColors) {
@@ -220,7 +203,7 @@ function getGraphCssColor(color) {
     return `rgb(${red}, ${green}, ${blue})`;
 }
 
-function drawSmoothTrace(cr, points) {
+function drawSmoothTrace(cr, points, idleBaseline) {
     if (points.length === 0)
         return;
 
@@ -228,6 +211,10 @@ function drawSmoothTrace(cr, points) {
     for (let index = 1; index < points.length; index++) {
         const [previousX, previousY] = points[index - 1];
         const [currentX, currentY] = points[index];
+        if (previousY === idleBaseline && currentY === idleBaseline) {
+            cr.moveTo(currentX, currentY);
+            continue;
+        }
         const distance = (currentX - previousX) * 0.35;
         cr.curveTo(
             previousX + distance, previousY,
@@ -255,6 +242,20 @@ function getGpuGraphColor(value, type) {
     ]);
 }
 
+function addGraphSummary(box, label, value, detail, themeColors, St) {
+    const { textColor, secondaryColor } = sectionTextColors(themeColors);
+    const row = new St.BoxLayout({ style: 'spacing: 7px; padding: 1px 0 0 4px;' });
+    row.add_child(new St.Label({ text: label,
+        style: `color: ${secondaryColor}; font-weight: 500; font-size: 11px;` }));
+    if (value)
+        row.add_child(new St.Label({ text: value,
+            style: `color: ${textColor}; font-weight: 600; font-size: 12px;` }));
+    if (detail)
+        row.add_child(new St.Label({ text: `· ${detail}`,
+            style: `color: ${secondaryColor}; font-weight: 500; font-size: 11px;` }));
+    box.add_child(row);
+}
+
 function addGpuGraph(gpuBox, label, history, type, themeColors, St, unit = '%', maxValue = 100, graphKey = label, summaryOverride = null) {
     if (!Array.isArray(history) || history.length === 0)
         return;
@@ -266,23 +267,23 @@ function addGpuGraph(gpuBox, label, history, type, themeColors, St, unit = '%', 
     const current = values[values.length - 1];
     const maximum = Math.max(...values);
     const average = values.reduce((sum, value) => sum + value, 0) / values.length;
-    const secondaryColor = themeColors?.secondaryText || themeColors?.text || '#ffffff';
-    const summary = summaryOverride || (type === 'temperature' || type === 'load'
-        ? `${label}  ·  Current ${current.toFixed(1)}${unit}  ·  Peak ${maximum.toFixed(1)}${unit}`
-        : `${label}  ·  Current ${current.toFixed(1)}${unit}  ·  Avg ${average.toFixed(1)}${unit}  ·  Peak ${maximum.toFixed(1)}${unit}`);
-    gpuBox.add_child(new St.Label({
-        text: summary,
-        style: `color: ${secondaryColor}; font-weight: bold; font-size: 10px; padding-left: 4px;`
-    }));
+    const summary = summaryOverride ?? {
+        label: type === 'temperature' ? 'Temperature' : label,
+        value: `${current.toFixed(1)}${unit}`,
+        detail: type === 'temperature' || type === 'load'
+            ? `Peak ${maximum.toFixed(1)}${unit}`
+            : `Avg ${average.toFixed(1)}${unit} · Peak ${maximum.toFixed(1)}${unit}`,
+    };
+    addGraphSummary(gpuBox, summary.label, summary.value, summary.detail, themeColors, St);
 
     const graphs = gpuGraphActors.get(gpuBox) || new Map();
     let graph = graphs.get(graphKey);
     if (!graph) {
         graph = new St.DrawingArea({
             width: 280,
-            height: 86,
+            height: 76,
             x_expand: true,
-            style: 'margin: 2px 0 6px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; background-color: rgba(255, 255, 255, 0.045);'
+            style: 'margin: 2px 0 3px; border: 1px solid rgba(128, 128, 128, 0.12); border-radius: 10px;'
         });
         graph.connect('repaint', area => {
         const cr = area.get_context();
@@ -310,7 +311,7 @@ function addGpuGraph(gpuBox, label, history, type, themeColors, St, unit = '%', 
             cr.lineTo(width - right, y);
             cr.stroke();
             cr.setSourceRGBA(0.7, 0.7, 0.7, 0.75);
-            cr.setFontSize(9);
+            cr.setFontSize(10);
             cr.moveTo(2, y + 3);
             cr.showText(`${level}${unit}`);
         }
@@ -355,9 +356,10 @@ function clearBox(box) {
         child.destroy();
 }
 
-function addCpuCell(row, text, style, width, St) {
+function addCpuCell(row, text, style, width, St, expand = false) {
     row.add_child(new St.Label({
         text,
+        x_expand: expand,
         style: `${style}${width ? ` min-width: ${width}px;` : ''}`
     }));
 }
@@ -374,8 +376,8 @@ function sectionTextColors(themeColors) {
     return {
         textColor,
         secondaryColor,
-        baseStyle: `color: ${textColor}; font-weight: bold; font-size: 10px;`,
-        subtleStyle: `color: ${secondaryColor}; font-weight: bold; font-size: 10px;`
+        baseStyle: `color: ${textColor}; font-weight: 500; font-size: 11px;`,
+        subtleStyle: `color: ${secondaryColor}; font-weight: 500; font-size: 11px;`
     };
 }
 
@@ -405,9 +407,9 @@ function addMetricBar(row, value, color, St, width = 48) {
 
 function addMetricRow(box, { name, value, percent, detail, color, nameWidth = 54, valueWidth = 70, detailWidth = 80 }, themeColors, St) {
     const { baseStyle, subtleStyle } = sectionTextColors(themeColors);
-    const nameStyle = `color: ${color}; font-weight: bold; font-size: 10px;`;
+    const nameStyle = `color: ${color}; font-weight: 600; font-size: 11px;`;
     const row = new St.BoxLayout({
-        orientation: Clutter.Orientation.HORIZONTAL,
+        ...horizontalBox,
         x_expand: true,
         style: 'padding: 3px 4px; margin-bottom: 3px; border-radius: 6px; background-color: rgba(255, 255, 255, 0.035);'
     });
@@ -427,7 +429,7 @@ function addMetricRow(box, { name, value, percent, detail, color, nameWidth = 54
 
 function addTitleRow(box, title, themeColors, St) {
     const { textColor } = sectionTextColors(themeColors);
-    const titleStyle = `color: ${textColor}; font-weight: bold; font-size: 11px;`;
+    const titleStyle = `color: ${textColor}; font-weight: 600; font-size: 11px;`;
     box.add_child(new St.Label({
         text: title,
         style: `${subtleStyle} padding: 3px 0 2px 4px;`
@@ -527,7 +529,7 @@ function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St, customC
             cr.lineTo(width - right, y);
             cr.stroke();
             cr.setSourceRGBA(0.7, 0.7, 0.7, 0.75);
-            cr.setFontSize(9);
+            cr.setFontSize(10);
             cr.moveTo(2, y + 3);
             cr.showText(`${level}`);
         }
@@ -552,13 +554,15 @@ function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St, customC
         for (let coreIndex = 0; coreIndex < coreCount; coreIndex++) {
             const [red, green, blue] = getCoreGraphColor(coreIndex, cpuGraphColors.get(area));
             const points = visibleHistory.map((_, sampleIndex) => point(sampleIndex, coreIndex));
-            drawSmoothTrace(cr, points);
+            drawSmoothTrace(cr, points, top + plotHeight);
             cr.setSourceRGB(red, green, blue);
             cr.stroke();
 
             const [x, y] = points[points.length - 1];
-            cr.arc(x, y, 2.5, 0, Math.PI * 2);
-            cr.fill();
+            if (y < top + plotHeight) {
+                cr.arc(x, y, 2.5, 0, Math.PI * 2);
+                cr.fill();
+            }
         }
         cr.restore();
     });
@@ -607,7 +611,7 @@ function addCPUTemperatureGraph(coreBox, coreDetails, temperatureHistory, themeC
             cr.lineTo(width - right, y);
             cr.stroke();
             cr.setSourceRGBA(0.7, 0.7, 0.7, 0.75);
-            cr.setFontSize(9);
+            cr.setFontSize(10);
             cr.moveTo(2, y + 3);
             cr.showText(`${level}°C`);
         }
@@ -673,11 +677,10 @@ function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true, cpuCore
 
     const textColor = themeColors?.text || '#ffffff';
     const secondaryColor = themeColors?.secondaryText || textColor;
-    const baseStyle = `color: ${textColor}; font-weight: bold; font-size: 11px;`;
-    const subtleStyle = `color: ${secondaryColor}; font-weight: bold; font-size: 11px;`;
+    const baseStyle = `color: ${textColor}; font-weight: 500; font-size: 11px;`;
+    const subtleStyle = `color: ${secondaryColor}; font-weight: 500; font-size: 11px;`;
 
     if (showGraph) {
-        const graphLabelStyle = `color: ${secondaryColor}; font-weight: bold; font-size: 10px; padding-left: 4px;`;
         const temperatures = cpuInfo.coreDetails
             .map(core => Number.parseFloat(core.temp))
             .filter(Number.isFinite);
@@ -700,11 +703,8 @@ function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true, cpuCore
         const peakTemperature = historicalTemperatures.length > 0
             ? Math.round(Math.max(...historicalTemperatures))
             : currentTemperature;
-        const loadSummary = averageLoad === null
-            ? 'CPU Load'
-            : `CPU Load  ·  Avg ${averageLoad}%` +
-                (averageFrequency === null ? '' : `  ·  Freq Avg ${averageFrequency} MHz`);
-        coreBox.add_child(new St.Label({ text: loadSummary, style: graphLabelStyle }));
+        addGraphSummary(coreBox, 'Load', averageLoad === null ? 'N/A' : `${averageLoad}%`,
+            averageFrequency === null ? '' : `${averageFrequency} MHz avg`, themeColors, St);
         const graphs = cachedGraphs || [];
         const loadGraph = graphs[0] || addCPUGraph(coreBox, cpuInfo.coreDetails, cpuInfo.loadHistory, themeColors, St, cpuCoreColors);
         if (graphs[0]) {
@@ -712,10 +712,9 @@ function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true, cpuCore
             cpuGraphColors.set(loadGraph, cpuCoreColors);
         }
         updateGraphMotion(loadGraph, cpuInfo.loadHistory, coreBox);
-        const temperatureSummary = currentTemperature === null
-            ? 'Core Temperature'
-            : `Core Temperature  ·  Current ${currentTemperature}°C  ·  Peak ${peakTemperature}°C`;
-        coreBox.add_child(new St.Label({ text: temperatureSummary, style: graphLabelStyle }));
+        addGraphSummary(coreBox, cpuInfo.temperatureSource === 'igpu' ? 'Temperature (iGPU)' : 'Temperature',
+            currentTemperature === null ? 'N/A' : `${currentTemperature}°C`,
+            peakTemperature === null ? '' : `Peak ${peakTemperature}°C`, themeColors, St);
         const temperatureGraph = graphs[1] || addCPUTemperatureGraph(coreBox, cpuInfo.coreDetails, cpuInfo.temperatureHistory, themeColors, St);
         if (graphs[1]) {
             coreBox.add_child(temperatureGraph);
@@ -724,28 +723,44 @@ function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true, cpuCore
         cpuGraphActors.set(coreBox, [loadGraph, temperatureGraph]);
     }
 
+    const coreNameWidth = cpuInfo.coreDetails.reduce((width, core) => Math.max(width, core.name.length * 7), 50);
+    if (cpuInfo.coreDetails.length) {
+        const header = new St.BoxLayout({ x_expand: true, style: 'padding: 5px 9px 4px;' });
+        for (const [text, width] of [['Core', coreNameWidth + 14], ['Frequency', 80], ['Load', 78], ['Temp', 60]])
+            addCpuCell(header, text, subtleStyle, width, St, true);
+        coreBox.add_child(header);
+    }
     for (let coreIndex = 0; coreIndex < cpuInfo.coreDetails.length; coreIndex++) {
         const core = cpuInfo.coreDetails[coreIndex];
         const load = Number.isFinite(core.load) ? core.load : 0;
         const tempNumber = parseFloat(core.temp);
-        const loadColor = getCoreGraphCssColor(coreIndex, cpuCoreColors);
+        const coreColor = getCoreGraphCssColor(coreIndex, cpuCoreColors);
+        const loadColor = getGreenToRedColor(load, { medium: 50, warm: 70, hot: 90 });
         const tempColor = Number.isFinite(tempNumber)
             ? getGraphCssColor(getTemperatureGraphColor(tempNumber))
             : secondaryColor;
 
         const row = new St.BoxLayout({
-            orientation: Clutter.Orientation.HORIZONTAL,
+            ...horizontalBox,
             x_expand: true,
-            style: `padding: 4px 5px; margin-bottom: 2px; border-radius: 5px; border-left: 3px solid ${loadColor};`
+            style: 'padding: 4px 9px; margin-bottom: 3px;'
         });
 
-        addCpuIndicator(row, loadColor, St);
-        addCpuCell(row, core.name, `${baseStyle} color: ${loadColor};`, 50, St);
-        addCpuCell(row, `${core.speed} MHz`, subtleStyle, 72, St);
-        addMetricBar(row, load, loadColor, St, 34);
-        addCpuCell(row, `${load}%`, baseStyle, 34, St);
-        addCpuIndicator(row, tempColor, St);
-        addCpuCell(row, `Temp ${core.temp} °C`, baseStyle, 70, St);
+        const coreCell = new St.BoxLayout({ width: coreNameWidth + 14, x_expand: true, style: 'spacing: 6px;' });
+        coreCell.add_child(new St.Widget({
+            width: 8,
+            height: 8,
+            y_align: Clutter.ActorAlign.CENTER,
+            style: `border-radius: 4px; background-color: ${coreColor};`
+        }));
+        addCpuCell(coreCell, core.name, baseStyle, coreNameWidth, St);
+        row.add_child(coreCell);
+        addCpuCell(row, `${core.speed} MHz`, subtleStyle, 80, St, true);
+        const loadCell = new St.BoxLayout({ width: 78, x_expand: true });
+        addMetricBar(loadCell, load, loadColor, St, 34);
+        addCpuCell(loadCell, `${load}%`, `${baseStyle} color: ${loadColor};`, 34, St);
+        row.add_child(loadCell);
+        addCpuCell(row, `${core.temp} °C`, `${baseStyle} color: ${tempColor};`, 60, St, true);
         coreBox.add_child(row);
     }
 
@@ -767,10 +782,10 @@ function addGpuMetricRow(gpuBox, {
     nameWidth = 46
 }, themeColors, St) {
     const { textColor, secondaryColor } = sectionTextColors(themeColors);
-    const baseStyle = `color: ${textColor}; font-weight: bold; font-size: 11px;`;
-    const subtleStyle = `color: ${secondaryColor}; font-weight: bold; font-size: 10px;`;
+    const baseStyle = `color: ${textColor}; font-weight: 500; font-size: 11px;`;
+    const subtleStyle = `color: ${secondaryColor}; font-weight: 500; font-size: 11px;`;
     const row = new St.BoxLayout({
-        orientation: Clutter.Orientation.HORIZONTAL,
+        ...horizontalBox,
         x_expand: true,
         style: 'padding: 2px 0;'
     });
@@ -793,10 +808,10 @@ function addGpuDetailRow(gpuBox, details, themeColors, St) {
         return;
 
     const { textColor, secondaryColor } = sectionTextColors(themeColors);
-    const baseStyle = `color: ${textColor}; font-weight: bold; font-size: 11px;`;
-    const subtleStyle = `color: ${secondaryColor}; font-weight: bold; font-size: 10px;`;
+    const baseStyle = `color: ${textColor}; font-weight: 500; font-size: 11px;`;
+    const subtleStyle = `color: ${secondaryColor}; font-weight: 500; font-size: 11px;`;
     const row = new St.BoxLayout({
-        orientation: Clutter.Orientation.HORIZONTAL,
+        ...horizontalBox,
         x_expand: true,
         style: 'padding: 2px 0;'
     });
@@ -810,7 +825,7 @@ function addGpuDetailRow(gpuBox, details, themeColors, St) {
     gpuBox.add_child(row);
 }
 
-function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpuTemperatureHistory = [], gpuLoadHistory = [], showGraph = true) {
+function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpuTemperatureHistory = [], gpuLoadHistory = [], showGraph = true, gpuHistories = []) {
     const cachedGraphs = gpuGraphActors.get(gpuBox);
     if (cachedGraphs) {
         for (const graph of cachedGraphs.values())
@@ -820,20 +835,25 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpu
     clearBox(gpuBox);
 
     const { textColor } = sectionTextColors(themeColors);
-    const titleStyle = `color: ${textColor}; font-weight: bold; font-size: 11px;`;
+    const titleStyle = `color: ${textColor}; font-weight: 600; font-size: 12px;`;
     const entries = gpuInfo.split(/\n\s*\n/).map(entry => entry.trim()).filter(Boolean);
+    const activeGraphs = new Set();
 
     for (const [gpuIndex, entry] of entries.entries()) {
+        const history = gpuHistories[gpuIndex] ?? { memory: gpuMemoryHistory, temperature: gpuTemperatureHistory, load: gpuLoadHistory };
         const lines = entry.split('\n').map(line => line.trim()).filter(Boolean);
-        const header = lines[0]?.match(/^GPU(\d+)\s+-\s+\[\s*(.+?)\s*\]/);
+        const header = lines[0]?.match(/^GPU(\d+)\s+-\s+\[\s*(.+?)\s*\]$/);
         if (!header)
             continue;
 
         gpuBox.add_child(new St.Label({
-            text: `GPU${header[1]}  ${header[2]}`,
-            style: `${titleStyle} padding-top: 2px;`
+            text: `GPU ${header[1]} · ${header[2]}`,
+            style: `${titleStyle} padding: 0 0 2px;`
         }));
 
+        const graphId = entry.match(/^Device:\s*(.+)$/m)?.[1] ?? gpuIndex;
+        for (const metric of ['load', 'memory', 'temperature'])
+            activeGraphs.add(`${metric}-${graphId}`);
         const body = lines.slice(1).join(' ');
         const vram = body.match(/VRAM:\s*([\d.]+MB)\s*\/\s*([\d.]+MB)\s*\|\s*([\d.]+)%/);
         const videoMemory = body.match(/Memory Usage:\s*([\d.]+\s*MB)\s*\/\s*([\d.]+\s*GB)\s*\|\s*([\d.]+)%/);
@@ -842,39 +862,36 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpu
         const frequency = body.match(/GPU Frequency:\s*([\d.]+)\s*MHz/);
         const utilization = body.match(/GPU Utilization:\s*([\d.]+)%/);
 
-        if (showGraph && utilization) {
+        if (utilization) {
             const currentFrequency = frequency?.[1] || clock?.[1];
-            const loadSummary = `GPU${header[1]} Load  ·  Current ${utilization[1]}%` +
-                (currentFrequency ? `  ·  Frequency ${currentFrequency} MHz` : '');
-            addGpuGraph(gpuBox, `GPU${header[1]} Load`, gpuLoadHistory, 'load', themeColors, St, '%', 100, `load-${gpuIndex}`, loadSummary);
+            const loadSummary = { label: 'Load', value: `${utilization[1]}%`,
+                detail: currentFrequency ? `${Number(currentFrequency).toFixed(0)} MHz` : '' };
+            if (showGraph)
+                addGpuGraph(gpuBox, `GPU${header[1]} Load`, history.load, 'load', themeColors, St, '%', 100, `load-${graphId}`, loadSummary);
+            else
+                addGraphSummary(gpuBox, loadSummary.label, loadSummary.value, loadSummary.detail, themeColors, St);
         }
         if (showGraph && videoMemory) {
-            addGpuGraph(gpuBox, 'Memory Usage', gpuMemoryHistory, 'memory', themeColors, St, '%', 100, `memory-${gpuIndex}`,
-                `Memory Usage  ·  ${videoMemory[1]} / ${videoMemory[2]}  ·  Load ${videoMemory[3]}%`);
+            addGpuGraph(gpuBox, 'Memory Usage', history.memory, 'memory', themeColors, St, '%', 100, `memory-${graphId}`,
+                { label: 'Memory', value: `${videoMemory[3]}%`, detail: `${videoMemory[1]} / ${videoMemory[2]}` });
         } else if (showGraph && vram) {
-            const percent = parseFloat(vram[3]);
-            addGpuGraph(gpuBox, 'VRAM Usage', gpuMemoryHistory, 'memory', themeColors, St, '%', 100, `memory-${gpuIndex}`,
-                `VRAM Usage  ·  ${vram[1]} / ${vram[2]}  ·  Load ${vram[3]}%`);
-            addGpuMetricRow(gpuBox, {
-                name: 'VRAM',
-                value: `${vram[1]} / ${vram[2]}`,
-                percent,
-                color: getGreenToRedColor(percent, { medium: 50, warm: 70, hot: 90 })
-            }, themeColors, St);
+            addGpuGraph(gpuBox, 'VRAM Usage', history.memory, 'memory', themeColors, St, '%', 100, `memory-${graphId}`,
+                { label: 'VRAM', value: `${vram[3]}%`, detail: `${vram[1]} / ${vram[2]}` });
         }
         if (showGraph && temp)
-            addGpuGraph(gpuBox, 'GPU Temperature', gpuTemperatureHistory, 'temperature', themeColors, St, '°C', 100, `temperature-${gpuIndex}`);
-        if (videoMemory) {
-            const percent = parseFloat(videoMemory[3]);
+            addGpuGraph(gpuBox, 'GPU Temperature', history.temperature, 'temperature', themeColors, St, '°C', 100, `temperature-${graphId}`);
+        if (!showGraph && (videoMemory || vram)) {
+            const memory = videoMemory || vram;
+            const percent = parseFloat(memory[3]);
             addGpuMetricRow(gpuBox, {
-                name: 'Memory Usage ',
-                value: `${videoMemory[1]} / ${videoMemory[2]}`,
+                name: videoMemory ? 'Memory' : 'VRAM',
+                value: `${memory[1]} / ${memory[2]}`,
                 percent,
                 color: getGreenToRedColor(percent, { medium: 50, warm: 70, hot: 90 })
             }, themeColors, St);
         }
         const detailRows = [];
-        if (temp) {
+        if (temp && !showGraph) {
             const tempValue = parseFloat(temp[1]);
             detailRows.push({
                 name: 'Temp',
@@ -895,7 +912,7 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpu
                 valueWidth: 108
             });
         }
-        if (frequency) {
+        if (frequency && !utilization) {
             const current = parseFloat(frequency[1]);
             detailRows.push({
                 name: 'GPU Frequency',
@@ -906,6 +923,14 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpu
             });
         }
         addGpuDetailRow(gpuBox, detailRows, themeColors, St);
+    }
+    if (cachedGraphs) {
+        for (const [key, graph] of cachedGraphs) {
+            if (!activeGraphs.has(key)) {
+                graph.destroy();
+                cachedGraphs.delete(key);
+            }
+        }
     }
 }
 
@@ -934,6 +959,37 @@ export function updateCPUData({ cpuName, coreBox, showGraph = true, cpuCoreColor
     }
 }
 
+function createUsageBar(percent, color, themeColors, St, width = 46) {
+    const track = new St.BoxLayout({ width, height: 5, y_align: Clutter.ActorAlign.CENTER,
+        style: `border-radius: 3px; background-color: ${themeColors?.isDark === false ? 'rgba(0, 0, 0, 0.12)' : 'rgba(255, 255, 255, 0.14)'};` });
+    track.add_child(new St.Widget({ width: Math.round(Math.max(0, Math.min(100, percent)) / 100 * width),
+        height: 5, style: `border-radius: 3px; background-color: ${color};` }));
+    return track;
+}
+
+function createUsageRing(percent, color, themeColors, St) {
+    const ring = new St.DrawingArea({ width: 34, height: 34, y_align: Clutter.ActorAlign.CENTER });
+    ring.connect('repaint', area => {
+        const cr = area.get_context();
+        const [width, height] = area.get_surface_size();
+        const radius = Math.min(width, height) / 2 - 3;
+        cr.setLineWidth(4);
+        const track = themeColors?.isDark === false ? 0 : 1;
+        cr.setSourceRGBA(track, track, track, 0.14);
+        cr.arc(width / 2, height / 2, radius, 0, Math.PI * 2);
+        cr.stroke();
+        if (percent > 0) {
+            const [red, green, blue] = [1, 3, 5].map(offset => parseInt(color.slice(offset, offset + 2), 16) / 255);
+            cr.setSourceRGB(red, green, blue);
+            cr.setLineCap(Cairo.LineCap.ROUND);
+            cr.arc(width / 2, height / 2, radius, -Math.PI / 2,
+                -Math.PI / 2 + Math.min(100, percent) / 100 * Math.PI * 2);
+            cr.stroke();
+        }
+    });
+    return ring;
+}
+
 export function updateMemoryData({ memoryBox, memoryUse, memorySwap, memoryCache }, memoryInfo, themeColors, St) {
     if (St && memoryBox) {
         clearBox(memoryBox);
@@ -948,33 +1004,28 @@ export function updateMemoryData({ memoryBox, memoryUse, memorySwap, memoryCache
         }
 
         const ramPercent = parsePercent(memoryInfo.percent);
-        addGpuMetricRow(memoryBox, {
-            name: 'RAM',
-            value: `${memoryInfo.use} / ${memoryInfo.max}`,
-            percent: ramPercent,
-            color: getGreenToRedColor(ramPercent, { medium: 50, warm: 70, hot: 90 }),
-            valueWidth: 88,
-            percentWidth: 28,
-            nameWidth: 40
-        }, themeColors, St);
+        const ramColor = getGreenToRedColor(ramPercent, { medium: 50, warm: 70, hot: 90 });
+        const row = new St.BoxLayout({ x_expand: true, style: 'spacing: 10px; padding-top: 2px;' });
+        const ring = createUsageRing(ramPercent, ramColor, themeColors, St);
+        row.add_child(ring);
+        const details = new St.BoxLayout({ ...verticalBox,
+            x_expand: true, y_align: Clutter.ActorAlign.CENTER, style: 'spacing: 4px;' });
+        const ramRow = new St.BoxLayout({ x_expand: true, style: 'spacing: 8px;' });
+        const { baseStyle, subtleStyle, textColor } = sectionTextColors(themeColors);
+        ramRow.add_child(new St.Label({ text: 'RAM',
+            style: `color: ${textColor}; font-weight: 600; font-size: 11px;` }));
+        ramRow.add_child(new St.Label({ text: `${memoryInfo.use} / ${memoryInfo.max}`,
+            style: baseStyle }));
+        ramRow.add_child(new St.Label({ text: `${Math.round(ramPercent)}%`,
+            style: `color: ${ramColor}; font-weight: 600; font-size: 11px;` }));
+        details.add_child(ramRow);
+        row.add_child(details);
+        memoryBox.add_child(row);
 
-        const swapPercent = parsePercent(memoryInfo.swapPercent);
-        addGpuDetailRow(memoryBox, [
-            {
-                name: 'Swap',
-                value: `${memoryInfo.swapUse} / ${memoryInfo.swapMax}`,
-                color: getGreenToRedColor(swapPercent, { medium: 40, warm: 60, hot: 80 }),
-                nameWidth: 42,
-                valueWidth: 98
-            },
-            {
-                name: 'Cache',
-                value: memoryInfo.cache,
-                color: '#ffffff',
-                nameWidth: 44,
-                valueWidth: 64
-            }
-        ], themeColors, St);
+        details.add_child(new St.Label({
+            text: `Swap ${memoryInfo.swapUse} / ${memoryInfo.swapMax}  ·  Cache ${memoryInfo.cache}`,
+            style: subtleStyle,
+        }));
         return;
     }
 
@@ -1022,18 +1073,23 @@ export function updateStorageData({ storageBox }, storageInfo, themeColors, St) 
         clearBox(storageBox);
         const entries = parseStorageEntries(storageInfo);
         if (entries.length > 0) {
+            const { baseStyle, subtleStyle, textColor } = sectionTextColors(themeColors);
             for (const entry of entries) {
                 const accentColor = getGreenToRedColor(entry.percent, { medium: 55, warm: 72, hot: 90 });
-                addGpuMetricRow(storageBox, {
-                    name: entry.mount,
-                    value: ` ${entry.used} / ${entry.size}`,
-                    percent: entry.percent,
-                    detail: `Free ${entry.available}`,
-                    color: accentColor,
-                    nameWidth: 44,
-                    valueWidth: 66,
-                    percentWidth: 28
-                }, themeColors, St);
+                const row = new St.BoxLayout({ x_expand: true,
+                    style: 'spacing: 7px; padding: 1px 0;', y_align: Clutter.ActorAlign.CENTER });
+                row.add_child(new St.Label({ text: entry.mount, width: 62,
+                    style: `color: ${textColor}; font-weight: 600; font-size: 11px;`,
+                    y_align: Clutter.ActorAlign.CENTER }));
+                row.add_child(new St.Label({ text: `${entry.used} / ${entry.size}`, width: 84,
+                    style: baseStyle, y_align: Clutter.ActorAlign.CENTER }));
+                row.add_child(createUsageBar(entry.percent, accentColor, themeColors, St));
+                row.add_child(new St.Label({ text: `${Math.round(entry.percent)}%`, width: 28,
+                    style: `color: ${accentColor}; font-weight: 600; font-size: 11px;`,
+                    y_align: Clutter.ActorAlign.CENTER }));
+                row.add_child(new St.Label({ text: `${entry.available} free`, style: subtleStyle,
+                    y_align: Clutter.ActorAlign.CENTER }));
+                storageBox.add_child(row);
             }
             return;
         }
@@ -1064,33 +1120,23 @@ export function updatePowerData({ powerBox, powerShow }, powerInfo, themeColors,
 
         const parsed = parsePowerInfo(powerInfo);
         if (parsed && Number.isFinite(parsed.percent)) {
-            const powerColor = getBatteryColor(parsed.percent, parsed.state);
-            addGpuMetricRow(powerBox, {
-                name: parsed.state || 'Battery',
-                // keep a spacer before the bar so status and bar are less cramped
-                value: ' ',
-                percent: parsed.percent,
-                color: powerColor,
-                nameWidth: 50,
-                valueWidth: 18,
-                percentWidth: 30
-            }, themeColors, St);
-            addGpuDetailRow(powerBox, [
-                {
-                    name: 'Use',
-                    value: parsed.wattage || 'N/A',
-                    color: '#ffffff',
-                    nameWidth: 28,
-                    valueWidth: 58
-                },
-                {
-                    name: 'Time',
-                    value: parsed.time || 'N/A',
-                    color: '#ffffff',
-                    nameWidth: 32,
-                    valueWidth: 86
-                }
-            ], themeColors, St);
+            const powerColor = getBatteryColor(parsed.percent, parsed.state, themeColors);
+            const { textColor, subtleStyle } = sectionTextColors(themeColors);
+            const details = new St.BoxLayout({ ...verticalBox,
+                x_expand: true, style: 'spacing: 4px; padding-top: 2px;' });
+            const row = new St.BoxLayout({ style: 'spacing: 8px;' });
+            row.add_child(new St.Label({ text: parsed.state || 'Battery',
+                style: `color: ${textColor}; font-weight: 600; font-size: 11px;` }));
+            row.add_child(createUsageBar(parsed.percent, powerColor, themeColors, St, 64));
+            row.add_child(new St.Label({ text: `${Math.round(parsed.percent)}%`,
+                style: `color: ${powerColor}; font-weight: 600; font-size: 11px;` }));
+            details.add_child(row);
+            const wattage = parsed.wattage ? parsed.wattage.replace(/W$/, ' W') : 'N/A';
+            const time = parsed.time
+                ? `${parsed.time} ${/^charging$/i.test(parsed.state) ? 'to full' : 'remaining'}`
+                : 'Time unavailable';
+            details.add_child(new St.Label({ text: `Power ${wattage}  ·  ${time}`, style: subtleStyle }));
+            powerBox.add_child(details);
             return;
         }
 
@@ -1106,7 +1152,7 @@ export function updatePowerData({ powerBox, powerShow }, powerInfo, themeColors,
 
 export function updateOSData({ device_OS, device_Kernel }, systemInfo) {
     if (!systemInfo) return;
-    if (device_OS) device_OS.text = `OS : ${systemInfo.osName} [${systemInfo.osType}]`;
+    if (device_OS) device_OS.text = `${systemInfo.osName} [${systemInfo.osType}]`;
     if (device_Kernel) device_Kernel.text = `Kernel : Linux ${systemInfo.kernelVersion}`;
 }
 
@@ -1114,14 +1160,17 @@ export function updateDeviceData({ deviceWithUptime }, uptime) {
     if (deviceWithUptime) deviceWithUptime.text = uptime;
 }
 
-export function updateGPUData({ gpuBox, gpuHead, gpuMemoryHistory = [], gpuTemperatureHistory = [], gpuLoadHistory = [], showGraph = true, sampleInterval = 5000, animationsEnabled = true }, gpuInfo, themeColors, St) {
+export function updateGPUData({
+    gpuBox, gpuHead, gpuMemoryHistory = [], gpuTemperatureHistory = [], gpuLoadHistory = [],
+    gpuHistories = [], showGraph = true, sampleInterval = 5000, animationsEnabled = true
+}, gpuInfo, themeColors, St) {
     if (gpuBox) {
         graphOptions.set(gpuBox, { interval: sampleInterval, enabled: animationsEnabled });
         if (gpuHead)
-            gpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
-        const detailStyle = `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`;
+            gpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`);
+        const detailStyle = `color: ${themeColors.text}; font-weight: 500; font-size: 11px;`;
         if (St && gpuInfo) {
-            setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory, gpuTemperatureHistory, gpuLoadHistory, showGraph);
+            setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory, gpuTemperatureHistory, gpuLoadHistory, showGraph, gpuHistories);
             if (gpuBox.get_children().length > 0)
                 return;
         }

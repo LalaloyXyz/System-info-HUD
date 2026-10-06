@@ -1,3 +1,4 @@
+import { verticalBox } from './modules/shellCompat.js';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -32,11 +33,10 @@ export class ProcessPage {
         this._selected = null;
         this._busy = false;
         this._ending = false;
-        this._destroyed = false;
         this._nextRefresh = 0;
         this._sort = 'cpu';
         this.actor = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+            ...verticalBox,
             x_expand: true, y_expand: true,
             style: 'padding: 16px 24px; spacing: 10px;',
             visible: false,
@@ -63,14 +63,18 @@ export class ProcessPage {
         toolbar.add_child(this._appsButton);
         this.actor.add_child(toolbar);
         const header = this._makeRow();
-        for (const [text, width] of [['Process', null], ['PID', 48], ['CPU avg', 62], ['GPU', 54], ['RAM MiB', 70]])
+        for (const [text, width] of [['Process', null], ['PID', 48], ['CPU', 62], ['GPU', 54], ['RAM', 70]])
             header.add_child(this._label(text, width));
         this.actor.add_child(header);
-        this._list = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL, x_expand: true, style: 'spacing: 4px;' });
+        this._list = new St.BoxLayout({ ...verticalBox, x_expand: true, style: 'spacing: 4px;' });
         const scroll = new St.ScrollView({ style_class: 'custom-scroll',
             overlay_scrollbars: true, x_expand: true, y_expand: true });
         scroll.set_policy(St.PolicyType.NEVER, St.PolicyType.AUTOMATIC);
         scroll.set_child(this._list);
+        for (const child of scroll.get_children()) {
+            if (child instanceof St.ScrollBar)
+                scroll.set_child_above_sibling(child, null);
+        }
         this.actor.add_child(scroll);
         this._message = new St.Label({ text: 'Select a process to end it.', x_expand: true });
         this.actor.add_child(this._message);
@@ -82,7 +86,7 @@ export class ProcessPage {
         this._endButton = new St.Button({ label: 'End Task', can_focus: true, style_class: 'button',
             style: 'background-color: #ff453a; color: white; border-radius: 20px; padding: 8px 16px; font-weight: 600;' });
         this._endButton.connect('clicked', () => {
-            if (this._destroyed || !this._selected || this._ending)
+            if (!this._selected || this._ending)
                 return;
             this._pending = this._selected;
             this._confirmation.text = `End ${this._pending.name} (PID ${this._pending.pid})? Unsaved work may be lost.`;
@@ -134,18 +138,18 @@ export class ProcessPage {
     }
 
     async refresh() {
-        if (this._destroyed || !this.actor.visible || this._busy || Date.now() < this._nextRefresh)
+        if (!this.actor || !this.actor.visible || this._busy || Date.now() < this._nextRefresh)
             return;
         this._busy = true;
         try {
             const processes = await this._module.list();
-            if (this._destroyed)
+            if (!this.actor)
                 return;
             this._updateRunningApps();
             this._processes = processes;
             this._render();
         } catch (error) {
-            if (!this._destroyed)
+            if (this.actor)
                 this._feedback.text = `Could not read processes: ${error.message}`;
         } finally {
             this._busy = false;
@@ -191,7 +195,7 @@ export class ProcessPage {
                     style_class: 'process-row' });
                 row = { button, icon, labels, process };
                 button.connect('clicked', () => {
-                    if (this._destroyed || this._ending)
+                    if (this._ending)
                         return;
                     this._cancelConfirmation();
                     this._feedback.text = '';
@@ -230,7 +234,7 @@ export class ProcessPage {
         if (!this._ending)
             this._message.text = this._selected ?
                 `${this._selected.name} · PID ${this._selected.pid}${allowed ? '' : ' · Protected or owned by another user'}` :
-                `${this._rows.size} ${this._appsOnly ? 'app processes' : 'processes'} · GPU —: waiting or unavailable`;
+                `${this._rows.size} ${this._appsOnly ? 'app processes' : 'processes'}`;
     }
 
     _cancelConfirmation() {
@@ -243,17 +247,17 @@ export class ProcessPage {
 
     async _endSelected() {
         const process = this._pending;
-        if (this._destroyed || !process || this._ending)
+        if (!process || this._ending)
             return;
         this._ending = true;
         this._cancelConfirmation();
         this._updateSelection();
         try {
             await this._module.end(process);
-            if (!this._destroyed)
+            if (this.actor)
                 this._feedback.text = `Asked ${process.name} (PID ${process.pid}) to exit.`;
         } catch (error) {
-            if (!this._destroyed)
+            if (this.actor)
                 this._feedback.text = `Could not end task: ${error.message}`;
         } finally {
             this._ending = false;
@@ -266,11 +270,19 @@ export class ProcessPage {
     }
 
     destroy() {
-        this._destroyed = true;
         this._module.destroy();
+        this._module = null;
+        this.actor.destroy();
+        this.actor = null;
         this._rows.clear();
         this._appIcons.clear();
         this._runningIcons.clear();
         this._appPids.clear();
+        this._processes = [];
+        this._selected = null;
+        this._pending = null;
+        for (const property of ['_search', '_sortButton', '_appsButton', '_list', '_message',
+            '_feedback', '_confirmation', '_endButton', '_confirmButton', '_cancelButton', '_fallbackIcon'])
+            this[property] = null;
     }
 }

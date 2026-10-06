@@ -101,13 +101,39 @@ lscpu  free  df  ip  upower  cat  uname  gnome-shell  lspci  ps  kill
 
 | Tool | Provides |
 |------|----------|
-| `sensors` *(lm-sensors)* | CPU and GPU temperatures |
+| `sensors` *(lm-sensors)* | CPU temperatures from identified CPU sensors |
 | `iwgetid` / `nmcli` / `iw` | Wi-Fi SSID details |
 | `nvidia-smi` | NVIDIA GPU metrics |
-| `rocm-smi` | AMD GPU metrics |
-| `intel_gpu_top` | Intel GPU utilization and frequency |
+| `rocm-smi` | Additional AMD GPU metrics, matched by PCI address |
 
 > Optional tools are detected automatically. Missing tools produce a useful fallback instead of preventing the extension from loading.
+
+## Hardware compatibility
+
+CPU load uses Linux `/proc/stat` on Intel, AMD, ARM, and other architectures. Frequencies come from each online CPU's cpufreq files, with `/proc/cpuinfo` as a fallback. Offline CPUs are omitted. Temperatures require an identified CPU sensor; unavailable readings show **N/A**. A package temperature may be repeated across its cores when individual readings are unavailable.
+
+| Graphics hardware | Identification and available readings |
+|-------------------|----------------------------------------|
+| AMD discrete and integrated | DRM sysfs: load, active graphics clock, VRAM allocation, and temperature when exposed; optional `rocm-smi` supplements missing metrics |
+| NVIDIA proprietary driver | `nvidia-smi`: memory, load, temperature, and supported clocks; PCI/DRM identification remains available when the tool fails |
+| NVIDIA Nouveau | PCI/DRM identification and readable hwmon temperature; proprietary-tool metrics may be unavailable |
+| Intel integrated and Arc | PCI/DRM identification, i915 or Xe frequency files, and readable hwmon temperature; total-device load and VRAM graphs are unavailable unless the driver exposes the required readings |
+| Other/platform/virtual GPUs | DRM driver or PCI identification; only metrics exposed by the driver are shown |
+| Hybrid and multiple GPUs | Measurements are matched by PCI address and graphs have separate histories; identical model names remain separate devices |
+
+An iGPU's reported VRAM allocation is driver-reserved memory, not all system RAM. Missing metrics are omitted rather than estimated. `intel_gpu_top` is not launched: it streams indefinitely and can require elevated permissions. No root access is requested by the extension.
+
+When CPU temperature sensors are unavailable on a single-socket AMD APU, the CPU section uses its identified iGPU temperature as a shared estimate. The HUD and copied report label this fallback; it is not a measured per-core CPU temperature. Discrete GPU temperatures are never used for this fallback.
+
+Compatibility depends on the Linux driver, readable kernel interfaces, installed tools, and GNOME Shell APIs. This does not certify every CPU/GPU model or GNOME release. Desktop systems without a computer battery show **No battery found**; peripheral batteries are ignored.
+
+Collector regression checks (mock Intel/AMD/ARM, Intel i915/Xe, NVIDIA, multiple GPUs, and missing hardware/tools):
+
+```sh
+gjs -m tests/hardware.js
+```
+
+These checks do not replace a live HUD, preferences, clipboard, animation, and process-action test in GNOME Shell.
 
 ## 🚀 Usage
 

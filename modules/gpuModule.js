@@ -1,446 +1,224 @@
 import { BaseModule } from './baseModule.js';
-import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 
 export class GPUModule extends BaseModule {
     constructor() {
-        super(2000); // 2 second cache TTL
-        // cache results of which checks to avoid repeating them every update
-        this._execCache = {};
-        // track ongoing background refresh to avoid duplicate parallel refreshes
-        this._bgRefreshInProgress = false;
+        super(2000);
+        this._refreshPromise = null;
     }
 
     async getGPUInfo() {
-        // If cache valid, return it immediately
-        if (this._isCacheValid()) {
+        if (this._isCacheValid())
             return this._cache.data;
-        }
-
-        // If we have stale cached data, return it immediately and refresh in background
-        if (this._cache && this._cache.data) {
-            // kick off background refresh but don't await it
-            this._refreshGPUInfo().catch(() => {});
-            return this._cache.data;
-        }
-
-        // No cache at all: do a one-time fetch (first call) and await it
-        return new Promise((resolve) => {
-            this._getGpuInfoAsync((result) => {
-                this._updateCache(result);
-                resolve(result);
-            });
-        });
-    }
-
-    // Non-blocking background refresh (deduplicated)
-    async _refreshGPUInfo() {
-        if (this._bgRefreshInProgress) return;
-        this._bgRefreshInProgress = true;
-        try {
-            await new Promise((resolve) => {
-                this._getGpuInfoAsync((result) => {
+        if (!this._refreshPromise) {
+            this._refreshPromise = this._collectGPUInfo()
+                .then(gpus => {
+                    const result = gpus.map((gpu, index) => this._formatGpuInfo(gpu, index)).join('\n\n');
                     this._updateCache(result);
-                    resolve(result);
-                });
-            });
-        } catch (e) {
-            // ignore
-        } finally {
-            this._bgRefreshInProgress = false;
+                    return result;
+                })
+                .catch(e => {
+                    logError(e, 'System HUD: Error reading GPU info');
+                    return this._cache.data ?? '';
+                })
+                .finally(() => { this._refreshPromise = null; });
         }
+        return this._cache.data ?? await this._refreshPromise;
     }
 
-    // helper to check executables once
-    async _hasExecutable(bin) {
-        if (this._execCache[bin] !== undefined) return this._execCache[bin];
-        try {
-            const out = await this._executeCommand(['which', bin]);
-            const exists = !!(out && out.trim());
-            this._execCache[bin] = exists;
-            return exists;
-        } catch (e) {
-            this._execCache[bin] = false;
-            return false;
-        }
+    _pciAddress(value) {
+        const match = value?.match(/(?:([\da-f]+):)?([\da-f]{2}:[\da-f]{2}\.[\da-f])/i);
+        return match ? `${(match[1] ?? '0').padStart(4, '0').slice(-4)}:${match[2]}`.toLowerCase() : null;
+    }
+
+    _hasExecutable(bin) {
+        return GLib.find_program_in_path(bin) !== null;
+    }
+
+    async _number(path, scale = 1) {
+        const text = (await this._readFile(path, true)).trim();
+        if (!text || !/^-?[\d.]+$/.test(text))
+            return undefined;
+        const value = Number(text) / scale;
+        return Number.isFinite(value) ? value : undefined;
     }
 
     async _getNvidiaInfo() {
+        if (!this._hasExecutable('nvidia-smi'))
+            return [];
+        const output = await this._executeCommand([
+            'nvidia-smi',
+            '--query-gpu=pci.bus_id,name,memory.total,memory.used,temperature.gpu,utilization.gpu',
+            '--format=csv,noheader,nounits'
+        ]);
         const gpus = [];
-        try {
-            const hasNvidia = await this._hasExecutable('nvidia-smi');
-            if (!hasNvidia) return gpus;
-            const nvidiaData = await this._executeCommand([
-                'nvidia-smi',
-                '--query-gpu=name,memory.total,memory.used,temperature.gpu,utilization.gpu',
-                '--format=csv,noheader,nounits'
-            ]);
-            // Get clockspeed (current and max)
-            const nvidiaClockData = await this._executeCommand([
-                'nvidia-smi',
-                '--query-gpu=clocks.current.graphics,clocks.max.graphics',
-                '--format=csv,noheader,nounits'
-            ]);
-            let clocks = [];
-            if (nvidiaClockData) {
-                clocks = nvidiaClockData.trim().split('\n').map(line => line.split(',').map(s => s.trim()));
+        for (const line of output.trim().split('\n')) {
+            const [bus, name, total, used, temp, utilization] = line.split(',').map(value => value.trim());
+            const pci = this._pciAddress(bus);
+            if (!pci || !name)
+                continue;
+            gpus.push({ pci, name, vramTotal: parseFloat(total), vramUsed: parseFloat(used),
+                temp: parseFloat(temp), utilization: parseFloat(utilization) });
+        }
+        // Clock support varies. Failure here must not discard the other metrics.
+        const clockOutput = await this._executeCommand([
+            'nvidia-smi', '--query-gpu=pci.bus_id,clocks.current.graphics,clocks.max.graphics',
+            '--format=csv,noheader,nounits'
+        ]);
+        for (const line of clockOutput.trim().split('\n')) {
+            const [bus, current, max] = line.split(',').map(value => value.trim());
+            const gpu = gpus.find(item => item.pci === this._pciAddress(bus));
+            if (gpu) {
+                gpu.clockspeed = parseFloat(current);
+                gpu.clockspeedMax = parseFloat(max);
             }
-            if (!nvidiaData) return gpus;
-            const gpuLines = nvidiaData.trim().split('\n');
-            for (let i = 0; i < gpuLines.length; i++) {
-                const line = gpuLines[i];
-                const [name, total, used, temp, utilization] = line.split(',').map(s => s.trim());
-                let clockspeed, clockspeedMax;
-                if (clocks[i]) {
-                    clockspeed = clocks[i][0];
-                    clockspeedMax = clocks[i][1];
-                }
-                gpus.push({
-                    name,
-                    vramTotal: total,
-                    vramUsed: used,
-                    temp,
-                    utilization: Number.parseFloat(utilization),
-                    clockspeed,
-                    clockspeedMax
-                });
-            }
-        } catch (e) {
-            // Ignore
         }
         return gpus;
     }
 
     async _getAmdInfo() {
-        const gpus = [];
+        if (!this._hasExecutable('rocm-smi'))
+            return [];
+        const output = await this._executeCommand(['rocm-smi', '--showbus', '--showproductname',
+            '--showmeminfo', 'vram', '--showtemp', '--showuse', '--json']);
         try {
-            const hasAmd = await this._hasExecutable('rocm-smi');
-            if (hasAmd) {
-                const amdData = await this._executeCommand([
-                    'rocm-smi',
-                    '--showproductname',
-                    '--showmemuse',
-                    '--json'
-                ]);
-                if (amdData) {
-                    const amdInfo = JSON.parse(amdData.trim());
-                    for (const key in amdInfo) {
-                        const gpu = amdInfo[key];
-                        if (gpu["Card series"]) {
-                            gpus.push({
-                                name: gpu["Card series"],
-                                vramTotal: Math.round(parseInt(gpu["VRAM Total Memory (B)"]) / (1024 * 1024)),
-                                vramUsed: Math.round(parseInt(gpu["VRAM Used Memory (B)"]) / (1024 * 1024)),
-                                temp: gpu["Temperature (C)"]
-                            });
+            return Object.values(JSON.parse(output)).flatMap(info => {
+                const pci = this._pciAddress(info['PCI Bus']);
+                if (!pci)
+                    return [];
+                return [{ pci, name: info['Card series'],
+                    vramTotalBytes: parseFloat(info['VRAM Total Memory (B)']),
+                    vramUsedBytes: parseFloat(info['VRAM Used Memory (B)']),
+                    temp: parseFloat(info['Temperature (Sensor edge) (C)']),
+                    utilization: parseFloat(info['GPU use (%)']) }];
+            });
+        } catch (_) {
+            return [];
+        }
+    }
+
+    async _getDrmInfo(card, pciNames) {
+        const cardPath = `/sys/class/drm/${card}`;
+        const device = `${cardPath}/device`;
+        const uevent = await this._readFile(`${device}/uevent`, true);
+        const pci = this._pciAddress(uevent.match(/^PCI_SLOT_NAME=(.+)$/m)?.[1]);
+        const driver = uevent.match(/^DRIVER=(.+)$/m)?.[1];
+        const vendor = (await this._readFile(`${device}/vendor`, true)).trim().toLowerCase();
+        const gpu = { pci, card, name: pciNames.get(pci) ?? `${driver ?? 'DRM'} GPU (${card})` };
+        gpu.vramUsedBytes = await this._number(`${device}/mem_info_vram_used`);
+        gpu.vramTotalBytes = await this._number(`${device}/mem_info_vram_total`);
+        gpu.utilization = await this._number(`${device}/gpu_busy_percent`);
+        if (vendor === '0x1002') {
+            const states = await this._readFile(`${device}/pp_dpm_sclk`, true);
+            const match = states.match(/\b([\d.]+)\s*Mhz\s*\*/i);
+            if (match)
+                gpu.clockspeed = Number(match[1]);
+        } else if (vendor === '0x8086') {
+            gpu.clockspeed = await this._number(`${cardPath}/gt_cur_freq_mhz`);
+            gpu.clockspeedMax = await this._number(`${cardPath}/gt_RP0_freq_mhz`);
+            // Xe exposes frequency under device/tileN/gtN/freq0 rather than i915's card attributes.
+            if (gpu.clockspeed === undefined) {
+                for (const tile of await this._listDirs(device, /^tile\d+$/)) {
+                    for (const gt of await this._listDirs(`${device}/${tile}`, /^gt\d+$/)) {
+                        const path = `${device}/${tile}/${gt}/freq0`;
+                        const frequency = await this._number(`${path}/act_freq`);
+                        if (frequency !== undefined) {
+                            gpu.clockspeed = frequency;
+                            gpu.clockspeedMax = await this._number(`${path}/rp0_freq`);
+                            break;
                         }
                     }
-                }
-            }
-            // Supplement with sensors
-            const sensorGPUs = await this._parseSensorsForGPU('amd');
-            for (const gpu of sensorGPUs) {
-                // Avoid duplicates by name
-                if (!gpus.some(g => g.name === gpu.name)) {
-                    gpus.push({
-                        name: gpu.name,
-                        temp: gpu.temp,
-                        clockspeed: gpu.sclk
-                    });
-                }
-            }
-
-            // Integrated AMD GPUs may not be exposed by rocm-smi or sensors.
-            // lspci still reports them as a Display controller, so use that as
-            // a lightweight identification fallback.
-            if (gpus.length === 0) {
-                const lspciOutput = await this._executeCommand(['lspci', '-nn']);
-                for (const line of lspciOutput.split('\n')) {
-                    if (!/(?:VGA compatible controller|3D controller|Display controller)(?:\s+\[[^\]]+\])?:/i.test(line) ||
-                        !/(?:AMD|ATI|Radeon)/i.test(line))
-                        continue;
-
-                    const name = line
-                        .replace(/^.*?(?:VGA compatible controller|3D controller|Display controller)(?:\s+\[[^\]]+\])?:\s*/i, '')
-                        .replace(/\s+\[[0-9a-f]{4}:[0-9a-f]{4}\]/gi, '')
-                        .replace(/\s+\(rev\s+[^)]+\)\s*$/i, '')
-                        .trim();
-                    if (name && !gpus.some(gpu => gpu.name === name))
-                        gpus.push({ name });
-                }
-            }
-
-            const drmStats = await this._getAmdDrmStats();
-            if (drmStats && gpus.length > 0)
-                Object.assign(gpus[0], drmStats);
-        } catch (e) {
-            // Ignore
-        }
-        return gpus;
-    }
-
-    async _getAmdDrmStats() {
-        try {
-            const cardDirs = await this._getDrmCardDirs();
-            for (const cardDir of cardDirs) {
-                const vendor = (await this._readFile(`${cardDir}vendor`)).trim().toLowerCase();
-                if (vendor !== '0x1002')
-                    continue;
-
-                const used = Number.parseInt((await this._readFile(`${cardDir}mem_info_vram_used`)).trim(), 10);
-                const total = Number.parseInt((await this._readFile(`${cardDir}mem_info_vram_total`)).trim(), 10);
-                const busy = Number.parseFloat((await this._readFile(`${cardDir}gpu_busy_percent`)).trim());
-                const states = await this._readFile(`${cardDir}pp_dpm_sclk`);
-                const frequencyMatch = states.match(/\b(\d+)\s*Mhz\s*\*/i);
-                const frequency = frequencyMatch ? Number.parseInt(frequencyMatch[1], 10) : undefined;
-
-                return {
-                    vramUsedBytes: Number.isFinite(used) ? used : undefined,
-                    vramTotalBytes: Number.isFinite(total) ? total : undefined,
-                    utilization: Number.isFinite(busy) ? busy : undefined,
-                    clockspeed: frequency
-                };
-            }
-        } catch (e) {
-            // DRM telemetry is optional.
-        }
-        return null;
-    }
-
-    async _getDrmCardDirs() {
-        const cardDirs = [];
-        try {
-            const drmDir = Gio.File.new_for_path('/sys/class/drm');
-            const enumerator = drmDir.enumerate_children(
-                'standard::name',
-                Gio.FileQueryInfoFlags.NONE,
-                null
-            );
-            let info;
-            while ((info = enumerator.next_file(null))) {
-                const name = info.get_name();
-                if (/^card\d+$/.test(name))
-                    cardDirs.push(drmDir.get_child(name).get_child('device').get_path() + '/');
-            }
-            enumerator.close(null);
-        } catch (e) {
-            // DRM telemetry is optional.
-        }
-        return cardDirs;
-    }
-
-    async _getIntelInfo() {
-        const gpus = [];
-        try {
-            const lspciOutput = await this._executeCommand(['lspci']);
-            const arcMatch = lspciOutput.match(/VGA.*Intel.*(Arc|DG2).*\[(.*?)\]/i);
-            const intelMatch = lspciOutput.match(/VGA.*Intel.*\[(.*?)\]/i);
-
-            let igttStats = null;
-            try {
-                const useIntelGpuTop = (typeof process !== 'undefined' && process.env && process.env.ENABLE_INTEL_GPU_TOP === '1');
-                if (useIntelGpuTop) {
-                    const hasIntelGpuTop = await this._hasExecutable('intel_gpu_top');
-                    if (hasIntelGpuTop) {
-                        try {
-                            igttStats = await this._getIntelGpuTopStats();
-                        } catch (e) {
-                            igttStats = null;
-                        }
-                    }
-                }
-            } catch (e) {
-                igttStats = null;
-            }
-
-            if (igttStats) {
-                let name = arcMatch ? `Intel Arc GPU: ${arcMatch[2] || 'DG2'}` : (intelMatch ? intelMatch[1] : 'Intel GPU');
-                gpus.push({
-                    name,
-                    temp: igttStats.temp,
-                    clockspeed: igttStats.freq,
-                    clockspeedMax: igttStats.freqMax,
-                    power: igttStats.power,
-                    utilization: igttStats.utilization
-                });
-            } else {
-                if (arcMatch) {
-                    gpus.push({ name: `Intel Arc GPU: ${arcMatch[2] || 'DG2'}` });
-                } else if (intelMatch) {
-                    gpus.push({ name: intelMatch[1] });
-                }
-                // Supplement with sensors
-                const sensorGPUs = await this._parseSensorsForGPU('intel');
-                for (const gpu of sensorGPUs) {
-                    if (!gpus.some(g => g.name === gpu.name)) {
-                        gpus.push({
-                            name: gpu.name,
-                            temp: gpu.temp,
-                            clockspeed: gpu.clk
-                        });
-                    }
-                }
-            }
-        } catch (e) {
-            // Ignore
-        }
-        return gpus;
-    }
-
-    async _parseSensorsForGPU(vendor) {
-        const sensorsText = await this._executeCommand(['sensors']);
-        const results = [];
-        if (vendor === 'amd') {
-            const amdSections = sensorsText.split(/\n(?=amdgpu-pci-)/);
-            for (const section of amdSections) {
-                if (!section.includes('amdgpu-pci-')) continue;
-                const nameMatch = section.match(/amdgpu-pci-([\w:-]+)/);
-                const name = nameMatch ? `AMD GPU (${nameMatch[1]})` : 'AMD GPU';
-                const tempMatch = section.match(/edge:\s+\+([\d.]+)°C/);
-                const temp = tempMatch ? tempMatch[1] : undefined;
-                const sclkMatch = section.match(/sclk:\s+([\d.]+) MHz/);
-                const sclk = sclkMatch ? sclkMatch[1] : undefined;
-                results.push({ name, temp, sclk });
-            }
-        }
-        if (vendor === 'intel') {
-            const intelSections = sensorsText.split(/\n(?=i915|intel-gpu)/);
-            for (const section of intelSections) {
-                if (!section.match(/i915|intel-gpu/)) continue;
-                const nameMatch = section.match(/(i915|intel-gpu)-pci-([\w:-]+)/);
-                const name = nameMatch ? `Intel GPU (${nameMatch[2] || nameMatch[1]})` : 'Intel GPU';
-                const tempMatch = section.match(/temp[1-9]*:\s+\+([\d.]+)°C/);
-                const temp = tempMatch ? tempMatch[1] : undefined;
-                const clkMatch = section.match(/GT core:\s+([\d.]+) MHz/);
-                const clk = clkMatch ? clkMatch[1] : undefined;
-                results.push({ name, temp, clk });
-            }
-        }
-        return results;
-    }
-
-    async _getIntelGpuTopStats() {
-        try {
-            // reduce sampling time to avoid blocking for 1s; 200ms gives quicker, lower-overhead snapshot
-            const output = await this._executeCommand(['intel_gpu_top', '-J', '-s', '200']);
-            const lines = output.trim().split('\n').filter(Boolean);
-            let stats = null;
-            for (let i = lines.length - 1; i >= 0; i--) {
-                try {
-                    const obj = JSON.parse(lines[i]);
-                    if (obj && obj.engines) {
-                        stats = obj;
+                    if (gpu.clockspeed !== undefined)
                         break;
-                    }
-                } catch (e) { }
-            }
-            if (!stats) return null;
-            const freq = stats.frequency ? stats.frequency.actual : undefined;
-            const freqMax = stats.frequency ? stats.frequency.rp0 : undefined;
-            const power = stats.power ? stats.power['GPU'] : undefined;
-            const temp = stats.temperature ? stats.temperature['GPU'] : undefined;
-            let utilization = 0;
-            if (stats.engines) {
-                for (const eng of Object.values(stats.engines)) {
-                    if (eng.busy !== undefined) utilization += eng.busy;
                 }
-                utilization = Math.round(utilization);
             }
-            return { freq, freqMax, power, temp, utilization };
-        } catch (e) {
-            return null;
         }
+        for (const hwmon of await this._listDirs(`${device}/hwmon`, /^hwmon\d+$/)) {
+            const path = `${device}/hwmon/${hwmon}`;
+            gpu.temp = await this._number(`${path}/temp1_input`, 1000);
+            if (gpu.temp !== undefined)
+                break;
+        }
+        return gpu;
     }
 
-    // Fallback: Try to get clockspeed from /sys/class/drm/card*/device/ for any GPU if not already set
-    async _addFallbackClockspeed(gpus) {
-        try {
-            const cardDirs = await this._getDrmCardDirs();
-            for (let i = 0; i < gpus.length; i++) {
-                const gpu = gpus[i];
-                if (!gpu.clockspeed) {
-                    for (const cardDir of cardDirs) {
-                        // Try common files for clockspeed
-                        const freqFiles = ['gpu_freq', 'pp_dpm_sclk', 'pp_dpm_mclk', 'pp_cur_state', 'pp_dpm_pcie', 'clock', 'current_freq'];
-                        for (const file of freqFiles) {
-                            const path = cardDir + file;
-                            try {
-                                const text = await this._readFile(path);
-                                // Try to extract MHz value
-                                const match = text.match(/(\d+)(?:\s*MHz)?/);
-                                if (match) {
-                                    gpu.clockspeed = match[1];
-                                    break;
-                                }
-                            } catch (e) { }
-                        }
-                        if (gpu.clockspeed) break;
-                    }
+    async _collectGPUInfo() {
+        const pciNames = new Map();
+        if (this._hasExecutable('lspci')) {
+            const output = await this._executeCommand(['lspci', '-D', '-nn']);
+            for (const line of output.split('\n')) {
+                const match = line.match(/^(\S+)\s+(?:VGA compatible controller|3D controller|Display controller)(?:\s+\[[^\]]+\])?:\s*(.+)$/i);
+                if (match) {
+                    const name = match[2].replace(/\s+\[[0-9a-f]{4}:[0-9a-f]{4}\]/gi, '')
+                        .replace(/\s+\(rev\s+[^)]+\)\s*$/i, '').trim();
+                    pciNames.set(this._pciAddress(match[1]), name);
                 }
             }
-        } catch (e) { }
+        }
+        const gpus = [];
+        for (const card of await this._listDirs('/sys/class/drm', /^card\d+$/)) {
+            const gpu = await this._getDrmInfo(card, pciNames);
+            if (!gpu.pci || !gpus.some(item => item.pci === gpu.pci))
+                gpus.push(gpu);
+        }
+        const [nvidia, amd] = await Promise.all([this._getNvidiaInfo(), this._getAmdInfo()]);
+        for (const gpu of [...nvidia, ...amd]) {
+            const existing = gpus.find(item => item.pci === gpu.pci);
+            if (existing) {
+                for (const [key, value] of Object.entries(gpu)) {
+                    if (value !== undefined && (typeof value !== 'number' || Number.isFinite(value))
+                        && (nvidia.includes(gpu) || existing[key] === undefined))
+                        existing[key] = value;
+                }
+            } else {
+                gpu.name ??= pciNames.get(gpu.pci) ?? 'AMD GPU';
+                gpus.push(gpu);
+            }
+        }
+        for (const [pci, name] of pciNames) {
+            if (!gpus.some(gpu => gpu.pci === pci))
+                gpus.push({ pci, name });
+        }
         return gpus;
     }
 
     _formatGpuInfo(gpu, idx) {
         // First line: VRAM and temperature status markers
         let line1 = `GPU${idx} - [ ${gpu.name} ]`;
+        if (gpu.pci || gpu.card)
+            line1 += `\nDevice: ${gpu.pci ?? gpu.card}`;
         const vramFields = [];
-        if (gpu.vramUsedBytes && gpu.vramTotalBytes) {
+        if (Number.isFinite(gpu.vramUsedBytes) && gpu.vramTotalBytes > 0) {
             const usedMB = gpu.vramUsedBytes / 1000000;
             const totalGB = gpu.vramTotalBytes / 1000000000;
             const load = Math.round((gpu.vramUsedBytes / gpu.vramTotalBytes) * 100);
             const vramMarker = this._getStatusMarker(load, [90, 70, 50, 30]);
             vramFields.push(`${vramMarker} Memory Usage: ${usedMB.toFixed(2)} MB / ${totalGB.toFixed(2)} GB | ${load}%`);
-        } else if (gpu.vramUsed && gpu.vramTotal) {
+        } else if (Number.isFinite(gpu.vramUsed) && gpu.vramTotal > 0) {
             const load = Math.round((parseInt(gpu.vramUsed) / parseInt(gpu.vramTotal)) * 100);
             const vramMarker = this._getStatusMarker(load, [90, 70, 50, 30]);
             vramFields.push(`${vramMarker} VRAM: ${gpu.vramUsed}MB / ${gpu.vramTotal}MB | ${load}% |`);
         }
-        if (gpu.temp) {
+        if (Number.isFinite(gpu.temp)) {
             const tempNum = parseFloat(gpu.temp);
             const tempMarker = this._getStatusMarker(tempNum, [80, 70, 55, 40, 30, 0]);
             vramFields.push(`${tempMarker} Temp: ${gpu.temp} °C`);
         }
-        if (Number.isFinite(Number(gpu.utilization)))
+        if (Number.isFinite(gpu.utilization))
             vramFields.push(`GPU Utilization: ${gpu.utilization}%`);
         if (vramFields.length) line1 += '\n' + vramFields.join(' ');
         let line2 = '';
-        if (gpu.clockspeed && gpu.clockspeedMax) {
+        if (Number.isFinite(gpu.clockspeed) && gpu.clockspeedMax > 0) {
             const clkNum = parseFloat(gpu.clockspeed);
             const clkMarker = this._getStatusMarker(clkNum, [2000, 1500, 1000, 500, 200, 0]);
             line2 = `${clkMarker} Clockspeed: ${gpu.clockspeed} / ${gpu.clockspeedMax} MHz`;
-        } else if (gpu.clockspeed) {
+        } else if (Number.isFinite(gpu.clockspeed)) {
             const clkNum = parseFloat(gpu.clockspeed);
             const clkMarker = this._getStatusMarker(clkNum, [2000, 1500, 1000, 500, 200, 0]);
             const frequency = Number.isFinite(clkNum) ? clkNum.toFixed(2) : gpu.clockspeed;
             line2 = `${clkMarker} GPU Frequency: ${frequency} MHz`;
         }
         return [line1, line2].filter(Boolean).join('\n');
-    }
-
-    _getGpuInfoAsync(callback) {
-        (async () => {
-            let allGpus = [];
-            const [nvidia, amd, intel] = await Promise.all([
-                this._getNvidiaInfo(),
-                this._getAmdInfo(),
-                this._getIntelInfo()
-            ]);
-            for (const arr of [nvidia, amd, intel]) {
-                for (const gpu of arr) {
-                    // Avoid duplicate names
-                    if (!allGpus.some(g => g.name === gpu.name)) {
-                        allGpus.push(gpu);
-                    }
-                }
-            }
-            // Fallback: try to add clockspeed for any GPU missing it
-            allGpus = await this._addFallbackClockspeed(allGpus);
-            const result = allGpus.length > 0
-                ? allGpus.map((gpu, idx) => this._formatGpuInfo(gpu, idx)).join('\n\n')
-                : '';
-            callback(result);
-        })();
     }
 
     getInfo() {

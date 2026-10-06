@@ -1,3 +1,4 @@
+import { verticalBox, horizontalBox } from './modules/shellCompat.js';
 import St from 'gi://St';
 import { ProcessPage } from './processPage.js';
 import { addButtonAnimation } from './modules/buttonAnimation.js';
@@ -5,6 +6,7 @@ import Clutter from 'gi://Clutter';
 import Meta from 'gi://Meta';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
+import Pango from 'gi://Pango';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import { 
@@ -36,8 +38,10 @@ export class UIManager {
         this._main_screen = null;
         this._closingMainScreen = false;
         this._openingMainScreen = false;
+        this._mainScreenTimeline = null;
         this._tabHighlightLaterId = 0;
         this._tabSwitchInProgress = false;
+        this._pageSwitchInProgress = false;
         this._updateTimeoutId = null;
         this._copyButtonTimeoutId = null;
         this._sectionRefreshTimeoutIds = [];
@@ -64,21 +68,19 @@ export class UIManager {
         );
         this._settings = null;
         this._settingsSignalIds = [];
-        this._useAnimation = true; // Default: use animation
-        this._showCopyButton = true; // Default: show copy button
+        this._useAnimation = true;
+        this._showCopyButton = true;
         this._showPowerSection = true;
         this._showCpuGraph = true;
         this._showGpuGraph = true;
         this._cpuCoreColors = [];
-        this._popupWidthPercent = 40;
-        this._popupHeightPercent = 40;
-        this._labelTimeoutIds = []; // Track label animation timeouts
-        this._updateInProgress = false; // prevent overlapping updates
+        this._popupWidthPercent = 42;
+        this._popupHeightPercent = 42;
+        this._labelTimeoutIds = [];
+        this._updateInProgress = false;
         this._cpuLoadHistory = [];
         this._cpuTemperatureHistory = [];
-        this._gpuMemoryHistory = [];
-        this._gpuTemperatureHistory = [];
-        this._gpuLoadHistory = [];
+        this._gpuHistories = new Map();
         this._lastCPUInfo = null;
         this._mainScreenKeyPressId = null;
         this._indicatorClickSignalId = null;
@@ -99,10 +101,12 @@ export class UIManager {
             this._applyRefreshInterval(this._settings.get_int('refresh-interval-ms'));
             this._settingsSignalIds.push(this._settings.connect('changed::enable-animations', () => {
                 this._useAnimation = this._settings.get_boolean('enable-animations');
+                if (this._updateOSMarquee)
+                    this._updateOSMarquee();
             }));
             this._settingsSignalIds.push(this._settings.connect('changed::show-copy-button', () => {
                 this._showCopyButton = this._settings.get_boolean('show-copy-button');
-                if (this._copyButton)
+                if (this._main_screen && !this._closingMainScreen && this._copyButton)
                     this._copyButton.visible = this._showCopyButton;
             }));
             this._settingsSignalIds.push(this._settings.connect('changed::refresh-interval-ms', () => {
@@ -110,7 +114,7 @@ export class UIManager {
             }));
             this._settingsSignalIds.push(this._settings.connect('changed::show-power-section', () => {
                 this._showPowerSection = this._settings.get_boolean('show-power-section');
-                if (this._powerSection)
+                if (this._main_screen && !this._closingMainScreen && this._powerSection)
                     this._powerSection.visible = this._showPowerSection;
             }));
             this._settingsSignalIds.push(this._settings.connect('changed::show-cpu-graph', () => {
@@ -179,12 +183,14 @@ export class UIManager {
     }
 
     _queueSectionRefresh(section, delayMs = 0) {
+        if (!this._main_screen || this._closingMainScreen)
+            return;
         if (this._displayCache[section] !== undefined) {
             this._runSectionUpdate(section, this._displayCache[section]).catch(error => {
                 logError(error, `System HUD: Error restoring ${section} section`);
             });
         }
-        if (this._openingMainScreen || this._tabSwitchInProgress) {
+        if (this._openingMainScreen || this._tabSwitchInProgress || this._pageSwitchInProgress) {
             this._nextRefreshAt[section] = 0;
             return;
         }
@@ -304,11 +310,10 @@ export class UIManager {
 
         // GNOME 49+ St.Button uses ClutterClickGesture internally, which can
         // consume press/release events before extension handlers see them.
-        if (this._indicator.clear_actions)
-            this._indicator.clear_actions();
+        this._indicator.clear_actions();
 
         this._indicatorClickSignalId = this._indicator.connect('button-press-event', (_actor, event) => {
-            if (event.get_button && event.get_button() !== 1)
+            if (event.get_button() !== 1)
                 return Clutter.EVENT_PROPAGATE;
 
             if (Date.now() - this._lastIndicatorActivation < 300)
@@ -320,7 +325,7 @@ export class UIManager {
         });
 
         this._indicatorTouchSignalId = this._indicator.connect('touch-event', (_actor, event) => {
-            if (event.type && event.type() !== Clutter.EventType.TOUCH_BEGIN)
+            if (event.type() !== Clutter.EventType.TOUCH_BEGIN)
                 return Clutter.EVENT_PROPAGATE;
 
             if (Date.now() - this._lastIndicatorActivation < 300)
@@ -402,15 +407,22 @@ export class UIManager {
                 memoryCache: this._memoryCache,
                 memoryHead: this._memoryHead
             }, themeColors);
+            if (this._displayCache.memory !== undefined)
+                this._updateMemoryInfo(this._displayCache.memory);
             updateStorageSectionStyle({
                 storageBox: this._storageBox,
                 storageHead: this._storageHead
             }, themeColors);
+            if (this._displayCache.storage !== undefined)
+                this._updateStorageInfo(this._displayCache.storage);
             updatePowerSectionStyle({
                 powerShow: this._powerShow,
                 powerHead: this._powerHead
             }, themeColors);
+            if (this._displayCache.power !== undefined)
+                this._updatePowerInfo(this._displayCache.power);
             updateOSSectionStyle({
+                osPrefix: this._osPrefix,
                 device_OS: this._device_OS,
                 device_Kernel: this._device_Kernel
             }, themeColors);
@@ -419,6 +431,8 @@ export class UIManager {
                 cpuName: this._cpuName,
                 coreBox: this._coreBox
             }, themeColors, St);
+            if (this._displayCache.cpu !== undefined)
+                this._updateCPUInfo(this._displayCache.cpu);
             updateGPUSectionStyle({
                 gpuHead: this._gpuHead,
                 gpuBox: this._gpuBox
@@ -433,7 +447,7 @@ export class UIManager {
         const themeColors = this._updateThemeColors();
         
         const column = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+            ...verticalBox,
             style: `background-color: transparent; border: 0px solid ${themeColors.accent};`,
             reactive: true,
             can_focus: true,
@@ -448,7 +462,7 @@ export class UIManager {
 
     _withSectionIcon(label, iconName) {
         const row = new St.BoxLayout({
-            orientation: Clutter.Orientation.HORIZONTAL,
+            ...horizontalBox,
             y_align: Clutter.ActorAlign.CENTER,
             style: 'spacing: 7px;'
         });
@@ -469,6 +483,13 @@ export class UIManager {
         let actorStartY = 0;
 
         actor.connect('button-press-event', (actor, event) => {
+            if (event.get_button() !== 1)
+                return Clutter.EVENT_PROPAGATE;
+            const eventActor = event.get_source() ?? actor.get_stage()?.get_event_actor?.(event);
+            for (let source = eventActor; source && source !== actor; source = source.get_parent()) {
+                if (source instanceof St.Button || source instanceof St.Entry || source instanceof St.ScrollBar)
+                    return Clutter.EVENT_PROPAGATE;
+            }
             dragging = true;
             const [x, y] = event.get_coords();
             dragStartX = x;
@@ -506,7 +527,7 @@ export class UIManager {
         const popupHeight = Math.floor(monitor.height * this._popupHeightPercent / 100);
 
         this._main_screen = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+            ...verticalBox,
             style: 'background-color: transparent;',
             reactive: true,
             can_focus: true,
@@ -540,20 +561,27 @@ export class UIManager {
         this._createHeaderButtons(navigation);
         this._main_screen.add_child(navigation);
         this._pageContainer = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL, x_expand: true, y_expand: true,
+            ...verticalBox, x_expand: true, y_expand: true,
         });
         this._main_screen.add_child(this._pageContainer);
+        this._pageStack = new St.Widget({
+            layout_manager: new Clutter.BinLayout(), x_expand: true, y_expand: true,
+            clip_to_allocation: true,
+        });
+        this._pageContainer.add_child(this._pageStack);
         this._statusPage = new St.BoxLayout({ x_expand: true, y_expand: true });
-        this._pageContainer.add_child(this._statusPage);
+        this._pageStack.add_child(this._statusPage);
         this._processPage = new ProcessPage(this._processSnapshot, () => this._useAnimation);
-        this._pageContainer.add_child(this._processPage.actor);
+        this._processPage.actor.reactive = true;
+        this._enableDrag(this._processPage.actor);
+        this._pageStack.add_child(this._processPage.actor);
+        this._showingProcesses = false;
         this._statusButton.connect('clicked', () => this._switchPage(false));
         this._processButton.connect('clicked', () => this._switchPage(true));
         this._stylePageButtons();
         this._switchPage(false);
         const contentHeight = Math.max(100, popupHeight - 54);
 
-        // Create columns
         const frontColumn = this._createColumn(Math.floor(popupWidth * 0.05));
         const leftColumn = this._createColumn(Math.floor(popupWidth * 0.44));
         const betweenColumn = this._createColumn(Math.floor(popupWidth * 0.03));
@@ -561,7 +589,6 @@ export class UIManager {
         const bebackColumn = this._createColumn(Math.floor(popupWidth * 0.01));
         const backColumn = this._createColumn(Math.floor(popupWidth * 0.05));
 
-        // Add columns to main screen
         this._statusPage.add_child(frontColumn);
         this._statusPage.add_child(leftColumn);
         this._statusPage.add_child(betweenColumn);
@@ -582,7 +609,6 @@ export class UIManager {
             trackFullscreen: true,
         });
 
-        // Allow Esc to close the popup.
         try {
             this._mainScreenKeyPressId = this._main_screen.connect('key-press-event', (_actor, event) => {
                 if (event.get_key_symbol() === Clutter.KEY_Escape) {
@@ -658,15 +684,8 @@ export class UIManager {
                 this._openAnimationLaterId = 0;
                 if (this._main_screen !== screen || this._closingMainScreen)
                     return GLib.SOURCE_REMOVE;
-                screen.opacity = 80;
-                screen.ease({
-                    x, y, scale_x: 1, scale_y: 1, opacity: 255,
-                    duration: 480,
-                    mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
-                    onComplete: () => {
-                        if (this._main_screen === screen && !this._closingMainScreen)
-                            this._openingMainScreen = false;
-                    },
+                this._animateMainScreen(screen, { x, y, scale_x: 1, scale_y: 1, opacity: 255 }, true, () => {
+                    this._openingMainScreen = false;
                 });
                 return GLib.SOURCE_REMOVE;
             });
@@ -674,17 +693,113 @@ export class UIManager {
         screen.show();
     }
 
-    _switchPage(showProcesses) {
-        if (!this._processPage)
+    _animateMainScreen(screen, target, opening, onComplete) {
+        const start = {
+            x: screen.x, y: screen.y,
+            scale_x: screen.scale_x, scale_y: screen.scale_y, opacity: screen.opacity,
+        };
+        const apply = (position, width, height, opacity) => {
+            screen.set_position(
+                start.x + (target.x - start.x) * position,
+                start.y + (target.y - start.y) * position);
+            screen.set_scale(
+                start.scale_x + (target.scale_x - start.scale_x) * width,
+                start.scale_y + (target.scale_y - start.scale_y) * height);
+            screen.opacity = Math.round(start.opacity + (target.opacity - start.opacity) * opacity);
+        };
+        const settings = St.Settings.get();
+        if (!settings.enable_animations) {
+            apply(1, 1, 1, 1);
+            onComplete();
             return;
-        this._statusPage.visible = !showProcesses;
-        this._processPage.setVisible(showProcesses, false);
+        }
+        const duration = Math.max(1, Math.round((opening ? 620 : 380) * settings.slow_down_factor));
+        const timeline = Clutter.Timeline.new_for_actor(screen, duration);
+        this._mainScreenTimeline = timeline;
+        // Continuous damped springs start at rest and retain velocity through each bounce.
+        const spring = (t, damping, frequency) =>
+            1 - Math.exp(-damping * t) *
+                (Math.cos(frequency * t) + damping / frequency * Math.sin(frequency * t));
+        timeline.connect('new-frame', (_timeline, elapsed) => {
+            const t = Math.min(1, elapsed / duration);
+            if (opening) {
+                const fade = Math.min(1, t / 0.35);
+                apply(spring(t, 10, 10), spring(t, 10, 12), spring(t, 10, 10),
+                    1 - (1 - fade) ** 3);
+            } else {
+                const position = t * t * (3 - 2 * t);
+                const height = Math.min(1, t * 1.12);
+                // Collapse vertically a little sooner, then tuck the pill into the panel.
+                apply(position, position, height * height * (3 - 2 * height), t ** 3);
+            }
+        });
+        timeline.connect('completed', () => {
+            this._mainScreenTimeline = null;
+            apply(1, 1, 1, 1);
+            onComplete();
+        });
+        timeline.start();
+    }
+
+    _switchPage(showProcesses) {
+        if (!this._processPage || this._closingMainScreen || this._showingProcesses === showProcesses)
+            return;
+        this._showingProcesses = showProcesses;
+        const incoming = showProcesses ? this._processPage.actor : this._statusPage;
+        const outgoing = showProcesses ? this._statusPage : this._processPage.actor;
+        const direction = showProcesses ? 1 : -1;
+        incoming.remove_all_transitions();
+        outgoing.remove_all_transitions();
+        if (!this._useAnimation) {
+            this._pageSwitchInProgress = false;
+            this._statusPage.visible = !showProcesses;
+            this._processPage.setVisible(showProcesses);
+            for (const page of [incoming, outgoing]) {
+                page.opacity = 255;
+                page.translation_x = 0;
+            }
+            this._styleTabButtons();
+            return;
+        }
+        this._pageSwitchInProgress = true;
+        if (!incoming.visible) {
+            incoming.opacity = 0;
+            incoming.translation_x = direction * 24;
+        }
+        if (showProcesses)
+            this._processPage.setVisible(true, false);
+        else
+            incoming.show();
+        this._pageStack.set_child_above_sibling(incoming, null);
+        const screen = this._main_screen;
+        outgoing.ease({ opacity: 0, translation_x: -direction * 24,
+            duration: 280, mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+            onComplete: () => {
+                if (this._main_screen !== screen || this._closingMainScreen || this._showingProcesses !== showProcesses)
+                    return;
+                if (showProcesses)
+                    outgoing.hide();
+                else
+                    this._processPage?.setVisible(false, false);
+                outgoing.translation_x = 0;
+            },
+        });
+        incoming.ease({ opacity: 255, translation_x: 0,
+            duration: 280, mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+            onComplete: () => {
+                if (this._main_screen !== screen || this._closingMainScreen || this._showingProcesses !== showProcesses)
+                    return;
+                this._pageSwitchInProgress = false;
+                if (showProcesses)
+                    this._processPage?.refresh();
+            },
+        });
         this._styleTabButtons();
     }
 
     _stylePageButtons() {
         const colors = this._updateThemeColors();
-        this._tabStrip.set_style(`padding: 5px; spacing: 4px; background-color: ${colors.accent}; border-radius: 23px;`);
+        this._tabStrip.set_style(`padding: 5px; spacing: 4px; background-color: ${colors.background}; border-radius: 23px;`);
         this._headerButtons.set_style(`padding: 5px; spacing: 8px; background-color: ${colors.background}; border-radius: 23px;`);
         this._pageContainer.set_style(`background-color: ${colors.background}; border: 1px solid ${colors.accent}; border-radius: 28px; box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);`);
         this._tabHighlight.set_style(`background-color: ${colors.isDark ? '#636366' : colors.surface}; border-radius: 18px;`);
@@ -694,7 +809,7 @@ export class UIManager {
 
     _styleTabButtons() {
         const colors = this._updateThemeColors();
-        const showProcesses = this._processPage.actor.visible;
+        const showProcesses = this._showingProcesses;
         for (const [button, active] of [[this._statusButton, !showProcesses], [this._processButton, showProcesses]])
             button.set_style(`padding: 8px 16px; border-radius: 18px; font-size: 12px; font-weight: 600; background-color: transparent; color: ${active ? colors.text : colors.secondaryText};`);
         this._queueTabHighlight(this._useAnimation);
@@ -715,7 +830,7 @@ export class UIManager {
     _moveTabHighlight(animate = this._useAnimation) {
         if (!this._processPage || this._closingMainScreen)
             return;
-        const button = this._processPage.actor.visible ? this._processButton : this._statusButton;
+        const button = this._showingProcesses ? this._processButton : this._statusButton;
         if (!button.has_allocation())
             return;
         const [x, y] = button.get_position();
@@ -738,10 +853,11 @@ export class UIManager {
         if (animate && initialized) {
             this._tabSwitchInProgress = true;
             this._tabHighlight.ease({
-                ...target, duration: 200, mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+                ...target, duration: 280, mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
                 onComplete: () => {
                     this._tabSwitchInProgress = false;
-                    this._processPage?.refresh();
+                    if (!this._pageSwitchInProgress && this._showingProcesses)
+                        this._processPage?.refresh();
                 },
             });
         } else {
@@ -783,7 +899,6 @@ export class UIManager {
     }
 
     async _createLeftColumn(column, popupHeight) {
-        // Create sections
         const sections = [
             { height: Math.floor(popupHeight * 0.04), type: 'space' },
             { height: Math.floor(popupHeight * 0.18), type: 'device' },
@@ -830,7 +945,6 @@ export class UIManager {
     }
 
     async _createRightColumn(column, popupHeight) {
-        // Create sections
         const sections = [
             { height: Math.floor(popupHeight * 0.11), type: 'space' },
             { height: Math.floor(popupHeight * 0.10), type: 'os' },
@@ -864,7 +978,7 @@ export class UIManager {
 
     _createHeaderButtons(navigation) {
         const buttonsRow = new St.BoxLayout({
-            orientation: Clutter.Orientation.HORIZONTAL,
+            ...horizontalBox,
             x_align: Clutter.ActorAlign.END,
             y_align: Clutter.ActorAlign.FILL,
             style: 'spacing: 6px;'
@@ -928,8 +1042,9 @@ export class UIManager {
     }
 
     async _copySystemInfoToClipboard() {
+        const screen = this._main_screen;
         const info = await this._systemLink.getAllInfo();
-        if (!info || info.error) {
+        if (!screen || this._main_screen !== screen || this._closingMainScreen || !info || info.error) {
             return;
         }
 
@@ -958,11 +1073,6 @@ export class UIManager {
         const networkSpeed = network.networkSpeed || 'N/A';
 
         const text = [
-            'SYSTEM SNAPSHOT FOR AI ANALYSIS',
-            'Analyze likely performance or thermal bottlenecks from the measurements below. ' +
-            'Distinguish measured facts from hypotheses, and state what additional data would help. ' +
-            '“N/A” means unavailable.',
-            '',
             'SYSTEM',
             `Hostname and uptime: ${info.uptime || 'Unknown'}`,
             `OS: ${system.osName || 'Unknown'}`,
@@ -975,8 +1085,9 @@ export class UIManager {
             `Model: ${cpu.cpu || 'Unknown'}`,
             `Logical cores: ${cpu.core ?? 'N/A'}`,
             `Average per-core load: ${averageLoad}`,
-            `Average core temperature: ${averageTemp}`,
-            `Highest core temperature: ${peakTemp}`,
+            `Temperature source: ${cpu.temperatureSource === 'igpu' ? 'iGPU estimate shared across cores, not measured CPU temperatures' : 'CPU sensors'}`,
+            `Average displayed temperature: ${averageTemp}`,
+            `Highest displayed temperature: ${peakTemp}`,
             'Per-core measurements (frequency, load, temperature):',
             ...(coreDetails.length > 0
                 ? coreDetails.map(core => `  ${core.name || `Core ${core.index}`} | ${core.speed ?? 'N/A'} MHz | ${core.load ?? 'N/A'}% | ${core.temp ?? 'N/A'} °C`)
@@ -994,7 +1105,7 @@ export class UIManager {
             ...storageLines,
             '',
             'NETWORK (IP addresses and Wi-Fi name omitted)',
-            `Connection: ${network.wifiSSID && network.wifiSSID !== 'Unknown' ? 'Wi-Fi connected' : 'Unknown'}`,
+            `Connection: ${network.wifiSSID && !['Unknown', 'Not connected'].includes(network.wifiSSID) ? 'Wi-Fi connected' : 'No Wi-Fi connection'}`,
             `Measured network speed: ${networkSpeed}`,
             '',
             'POWER',
@@ -1030,7 +1141,7 @@ export class UIManager {
         const avatarSize = Math.floor(column.height * 0.9);
 
         const profileRow = new St.BoxLayout({
-            orientation: Clutter.Orientation.HORIZONTAL,
+            ...horizontalBox,
             x_align: Clutter.ActorAlign.START,
             y_align: Clutter.ActorAlign.CENTER,
             reactive: true,
@@ -1054,7 +1165,7 @@ export class UIManager {
         profileRow.add_child(this._profileBin);
 
         const deviceInfoUser = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+            ...verticalBox,
             x_expand: true,
             y_align: Clutter.ActorAlign.END,
             style: 'padding-left: 15px;',
@@ -1062,17 +1173,17 @@ export class UIManager {
 
         this._deviceLabel = new St.Label({
             text: `Device name`,
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 14px;`,
+            style: `color: ${themeColors.secondaryText}; font-weight: 600; font-size: 14px;`,
         });
 
         const deviceNameRow = new St.BoxLayout({
-            orientation: Clutter.Orientation.HORIZONTAL,
+            ...horizontalBox,
             x_align: Clutter.ActorAlign.START,
         });
 
         this._deviceWithUptime = new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
+            style: `color: ${themeColors.text}; font-weight: 600; font-size: 16px;`,
             x_align: Clutter.ActorAlign.START,
         });
 
@@ -1088,43 +1199,38 @@ export class UIManager {
 
     async _createNetworkSection(column) {
         const themeColors = this._updateThemeColors();
-        // Create container for WiFi and IP info
         const ipAndWiFi_LeftColumn = this._createColumn(null, null);
-        // ========== NETWORK SPEED ========== //
         this._wifiLabel = new St.Label({
             text: 'Wi-Fi : ',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+            style: `color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`
         });
         this._wifiSpeedLabel = new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 13px;`
+            style: `color: ${themeColors.text}; font-weight: 600; font-size: 13px;`
         });
-        const wifiRow = new St.BoxLayout({ orientation: Clutter.Orientation.HORIZONTAL });
+        const wifiRow = new St.BoxLayout({ ...horizontalBox });
         wifiRow.add_child(this._withSectionIcon(this._wifiLabel, 'network-wireless-symbolic'));
         wifiRow.add_child(this._wifiSpeedLabel);
         ipAndWiFi_LeftColumn.add_child(wifiRow);
-        // ========== IP ADDRESSES ========== //
-        const publicipRow = new St.BoxLayout({ orientation: Clutter.Orientation.HORIZONTAL });
-        const localipRow = new St.BoxLayout({ orientation: Clutter.Orientation.HORIZONTAL });
-        // Public IP Label
+        const publicipRow = new St.BoxLayout({ ...horizontalBox });
+        const localipRow = new St.BoxLayout({ ...horizontalBox });
         this._publicIPDescLabel = new St.Label({
             text: 'Public IP : ',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 12px;`
+            style: `color: ${themeColors.secondaryText}; font-weight: 500; font-size: 12px;`
         });
         this._publicIPLabel = new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+            style: `color: ${themeColors.text}; font-weight: 500; font-size: 12px;`
         });
         publicipRow.add_child(this._publicIPDescLabel);
         publicipRow.add_child(this._publicIPLabel);
-        // Local IP Label
         this._localIPDescLabel = new St.Label({
             text: 'Local IP : ',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 12px;`
+            style: `color: ${themeColors.secondaryText}; font-weight: 500; font-size: 12px;`
         });
         this._localIPLabel = new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 12px;`
+            style: `color: ${themeColors.text}; font-weight: 500; font-size: 12px;`
         });
         localipRow.add_child(this._localIPDescLabel);
         localipRow.add_child(this._localIPLabel);
@@ -1138,16 +1244,16 @@ export class UIManager {
         const themeColors = this._updateThemeColors();
         this._memoryHead = new St.Label({
             text: 'Memory',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+            style: `color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`
         });
         this._memoryBox = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+            ...verticalBox,
             x_expand: true,
             y_expand: false
         });
         this._memoryBox.add_child(new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+            style: `color: ${themeColors.text}; font-weight: 500; font-size: 11px;`,
             x_expand: true
         }));
         column.add_child(this._withSectionIcon(this._memoryHead, 'memory-symbolic'));
@@ -1159,10 +1265,10 @@ export class UIManager {
         const themeColors = this._updateThemeColors();
         this._storageHead = new St.Label({
             text: 'Storage',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+            style: `color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`
         });
         this._storageBox = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+            ...verticalBox,
             x_expand: true,
             y_expand: true
         });
@@ -1176,7 +1282,7 @@ export class UIManager {
         storage_scrollView.set_child(this._storageBox);
         this._storageBox.add_child(new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+            style: `color: ${themeColors.text}; font-weight: 500; font-size: 11px;`,
             x_expand: true
         }));
         column.add_child(this._withSectionIcon(this._storageHead, 'drive-harddisk-symbolic'));
@@ -1188,16 +1294,16 @@ export class UIManager {
         const themeColors = this._updateThemeColors();
         this._powerHead = new St.Label({
             text: 'Power',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+            style: `color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`
         });
         this._powerBox = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+            ...verticalBox,
             x_expand: true,
             y_expand: false
         });
         const loadingLabel = new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+            style: `color: ${themeColors.text}; font-weight: 500; font-size: 11px;`,
             x_expand: true
         });
         this._powerShow = null;
@@ -1209,19 +1315,75 @@ export class UIManager {
 
     async _createOSSection(column) {
         const themeColors = this._updateThemeColors();
+        const osStyle = `color: ${themeColors.text}; font-weight: 600; font-size: 18px;`;
+        const osRow = new St.BoxLayout({ x_expand: true, style: 'spacing: 6px;' });
+        this._osPrefix = new St.Label({ text: 'OS :', style: osStyle });
+        osRow.add_child(this._osPrefix);
+        const viewport = new St.Widget({
+            layout_manager: new Clutter.FixedLayout(), clip_to_allocation: true,
+            x_expand: true, min_width: 0, natural_width: 0,
+        });
         this._device_OS = new St.Label({
-            text: 'OS : Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 18px;`,
+            text: 'Loading...',
+            style: osStyle,
             x_align: Clutter.ActorAlign.START,
+        });
+        this._device_OS.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        this._device_OS.clutter_text.single_line_mode = true;
+        viewport.add_child(this._device_OS);
+        osRow.add_child(viewport);
+
+        const label = this._device_OS;
+        let timer = 0;
+        const stop = () => {
+            if (timer) {
+                GLib.source_remove(timer);
+                timer = 0;
+            }
+            label.remove_all_transitions();
+            label.translation_x = 0;
+        };
+        const restart = () => {
+            stop();
+            if (!viewport.mapped || !this._useAnimation || this._closingMainScreen)
+                return;
+            const overflow = label.get_preferred_width(-1)[1] - viewport.width;
+            if (overflow <= 0)
+                return;
+            const slide = toEnd => {
+                timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1200, () => {
+                    timer = 0;
+                    if (!viewport.mapped || !this._useAnimation || this._closingMainScreen)
+                        return GLib.SOURCE_REMOVE;
+                    label.ease({ translation_x: toEnd ? -overflow : 0,
+                        duration: Math.max(1000, Math.round(overflow / 30 * 1000)),
+                        mode: Clutter.AnimationMode.LINEAR,
+                        onComplete: () => slide(!toEnd),
+                    });
+                    return GLib.SOURCE_REMOVE;
+                });
+            };
+            slide(true);
+        };
+        this._updateOSMarquee = restart;
+        viewport.connect('notify::allocation', restart);
+        viewport.connect('notify::mapped', restart);
+        label.connect('notify::allocation', restart);
+        label.connect('notify::text', restart);
+        label.connect('style-changed', restart);
+        viewport.connect('destroy', () => {
+            stop();
+            if (this._updateOSMarquee === restart)
+                this._updateOSMarquee = null;
         });
 
         this._device_Kernel = new St.Label({
             text: 'Kernel : Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 16px;`,
+            style: `color: ${themeColors.text}; font-weight: 600; font-size: 16px;`,
             x_align: Clutter.ActorAlign.START,
         });
 
-        column.add_child(this._device_OS);
+        column.add_child(osRow);
         column.add_child(this._device_Kernel);
 
         const setPrimary = () => {
@@ -1266,7 +1428,7 @@ export class UIManager {
             });
         };
 
-        connectHover(this._device_OS);
+        connectHover(osRow);
         connectHover(this._device_Kernel);
 
         this._queueSectionRefresh('os', 0);
@@ -1276,14 +1438,14 @@ export class UIManager {
         const themeColors = this._updateThemeColors();
         this._cpuHead = new St.Label({
             text: 'Processor',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+            style: `color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`
         });
         this._cpuName = new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 14px;`
+            style: `color: ${themeColors.text}; font-weight: 600; font-size: 14px;`
         });
         this._coreBox = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+            ...verticalBox,
             x_expand: true,
             y_expand: true
         });
@@ -1298,14 +1460,17 @@ export class UIManager {
 
         this._coreBox.add_child(new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+            style: `color: ${themeColors.text}; font-weight: 500; font-size: 11px;`,
             x_expand: true
         }));
 
-        const cpuHeadBox = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL });
+        const cpuHeadBox = new St.BoxLayout({ ...verticalBox });
         cpuHeadBox.add_child(this._withSectionIcon(this._cpuHead, 'cpu-symbolic'));
         cpuHeadBox.add_child(this._cpuName);
         column.add_child(cpuHeadBox);
+        // Keep refreshed scroll contents within the CPU section's height budget.
+        cpu_scrollView.set_height(Math.max(1, column.height - cpuHeadBox.get_preferred_height(-1)[1] - 6));
+        cpu_scrollView.y_expand = false;
         column.add_child(cpu_scrollView);
         this._queueSectionRefresh('cpu', 0);
     }
@@ -1314,13 +1479,13 @@ export class UIManager {
         const themeColors = this._updateThemeColors();
         this._gpuHead = new St.Label({
             text: 'Graphics',
-            style: `color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`
+            style: `color: ${themeColors.secondaryText}; font-weight: 600; font-size: 13px;`
         });
         this._gpuBox = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+            ...verticalBox,
             x_expand: true,
             y_expand: true,
-            style: `padding: 5px;`
+            style: 'padding: 2px 0;'
         });
         const gpu_scrollView = new St.ScrollView({
             style_class: 'custom-scroll',
@@ -1334,7 +1499,7 @@ export class UIManager {
         column.add_child(gpu_scrollView);
         this._gpuBox.add_child(new St.Label({
             text: 'Loading...',
-            style: `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`,
+            style: `color: ${themeColors.text}; font-weight: 500; font-size: 11px;`,
             x_expand: true
         }));
         this._queueSectionRefresh('gpu', 0);
@@ -1346,34 +1511,36 @@ export class UIManager {
             const themeColors = this._updateThemeColors();
             const gpuInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getGPUInfo();
             this._displayCache.gpu = gpuInfo;
-            if (this._main_screen !== screen || this._closingMainScreen)
+            if (!screen || this._main_screen !== screen || this._closingMainScreen)
                 return;
+            const entries = (gpuInfo ?? '').split(/\n\s*\n/).filter(entry => entry.trim());
             if (cachedInfo === undefined) {
-                const memoryMatch = gpuInfo?.match(/(?:Memory Usage|VRAM):\s*[\d.]+\s*MB\s*\/\s*[\d.]+\s*(?:GB|MB)\s*\|\s*([\d.]+)%/);
-                const temperatureMatch = gpuInfo?.match(/Temp:\s*([\d.]+)\s*°C/);
-                const loadMatch = gpuInfo?.match(/GPU Utilization:\s*([\d.]+)%/);
-                if (memoryMatch) {
-                    this._gpuMemoryHistory.push(Number.parseFloat(memoryMatch[1]));
-                    if (this._gpuMemoryHistory.length > 60)
-                        this._gpuMemoryHistory.shift();
+                for (const entry of entries) {
+                    const identity = entry.match(/^Device:\s*(.+)$/m)?.[1] ?? entry.split('\n')[0];
+                    const history = this._gpuHistories.get(identity) ?? { memory: [], temperature: [], load: [] };
+                    const matches = {
+                        memory: entry.match(/(?:Memory Usage|VRAM):\s*[\d.]+\s*MB\s*\/\s*[\d.]+\s*(?:GB|MB)\s*\|\s*([\d.]+)%/),
+                        temperature: entry.match(/Temp:\s*([\d.]+)\s*°C/),
+                        load: entry.match(/GPU Utilization:\s*([\d.]+)%/),
+                    };
+                    for (const [metric, match] of Object.entries(matches)) {
+                        if (match) {
+                            history[metric].push(Number.parseFloat(match[1]));
+                            if (history[metric].length > 60)
+                                history[metric].shift();
+                        }
+                    }
+                    this._gpuHistories.set(identity, history);
                 }
-                if (temperatureMatch) {
-                    this._gpuTemperatureHistory.push(Number.parseFloat(temperatureMatch[1]));
-                    if (this._gpuTemperatureHistory.length > 60)
-                        this._gpuTemperatureHistory.shift();
-                }
-                if (loadMatch) {
-                    this._gpuLoadHistory.push(Number.parseFloat(loadMatch[1]));
-                    if (this._gpuLoadHistory.length > 60)
-                        this._gpuLoadHistory.shift();
+                for (const identity of this._gpuHistories.keys()) {
+                    if (!entries.some(entry => (entry.match(/^Device:\s*(.+)$/m)?.[1] ?? entry.split('\n')[0]) === identity))
+                        this._gpuHistories.delete(identity);
                 }
             }
             updateGPUData({
                 gpuBox: this._gpuBox,
                 gpuHead: this._gpuHead,
-                gpuMemoryHistory: this._gpuMemoryHistory,
-                gpuTemperatureHistory: this._gpuTemperatureHistory,
-                gpuLoadHistory: this._gpuLoadHistory,
+                gpuHistories: entries.map(entry => this._gpuHistories.get(entry.match(/^Device:\s*(.+)$/m)?.[1] ?? entry.split('\n')[0])),
                 showGraph: this._showGpuGraph,
                 sampleInterval: this._refreshIntervalMs * this._refreshMultipliers.gpu,
                 animationsEnabled: this._useAnimation,
@@ -1386,7 +1553,7 @@ export class UIManager {
         if (this._deviceWithUptime) {
             const uptime = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getUptime();
             this._displayCache.device = uptime;
-            if (this._main_screen !== screen || this._closingMainScreen)
+            if (!screen || this._main_screen !== screen || this._closingMainScreen)
                 return;
             updateDeviceData({ deviceWithUptime: this._deviceWithUptime }, uptime);
         }
@@ -1396,7 +1563,7 @@ export class UIManager {
         const screen = this._main_screen;
         const networkInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getNetworkInfo();
         this._displayCache.network = networkInfo;
-        if (this._main_screen !== screen || this._closingMainScreen)
+        if (!screen || this._main_screen !== screen || this._closingMainScreen)
             return;
         updateNetworkData({
             wifiSpeedLabel: this._wifiSpeedLabel,
@@ -1411,7 +1578,7 @@ export class UIManager {
             try {
                 const memoryInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getMemoryInfo();
                 this._displayCache.memory = memoryInfo;
-                if (this._main_screen !== screen || this._closingMainScreen)
+                if (!screen || this._main_screen !== screen || this._closingMainScreen)
                     return;
                 const themeColors = this._updateThemeColors();
                 updateMemoryData({
@@ -1422,6 +1589,8 @@ export class UIManager {
                 }, memoryInfo, themeColors, St);
             } catch (error) {
                 logError(error, 'System HUD: Error updating memory info');
+                if (!screen || this._main_screen !== screen || this._closingMainScreen)
+                    return;
                 const themeColors = this._updateThemeColors();
                 updateMemoryData({
                     memoryBox: this._memoryBox,
@@ -1441,7 +1610,7 @@ export class UIManager {
         try {
             const systemInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getSystemInfo();
             this._displayCache.os = systemInfo;
-            if (this._main_screen !== screen || this._closingMainScreen)
+            if (!screen || this._main_screen !== screen || this._closingMainScreen)
                 return;
             this._osDetails = systemInfo;
             updateOSData({
@@ -1450,8 +1619,10 @@ export class UIManager {
             }, systemInfo);
         } catch (error) {
             logError(error, 'System HUD: Error updating system info');
+            if (!screen || this._main_screen !== screen || this._closingMainScreen)
+                return;
             this._osDetails = null;
-            this._device_OS.text = 'OS : Unknown';
+            this._device_OS.text = 'Unknown';
             this._device_Kernel.text = 'Kernel : Unknown';
         }
     }
@@ -1461,7 +1632,7 @@ export class UIManager {
         if (this._storageBox) {
             const storageInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getStorageInfo();
             this._displayCache.storage = storageInfo;
-            if (this._main_screen !== screen || this._closingMainScreen)
+            if (!screen || this._main_screen !== screen || this._closingMainScreen)
                 return;
             const themeColors = this._updateThemeColors();
             updateStorageData({ storageBox: this._storageBox }, storageInfo, themeColors, St);
@@ -1474,7 +1645,7 @@ export class UIManager {
             try {
                 const powerInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getPowerInfo();
                 this._displayCache.power = powerInfo;
-                if (this._main_screen !== screen || this._closingMainScreen)
+                if (!screen || this._main_screen !== screen || this._closingMainScreen)
                     return;
                 const themeColors = this._updateThemeColors();
                 updatePowerData({
@@ -1483,6 +1654,8 @@ export class UIManager {
                 }, powerInfo, themeColors, St);
             } catch (error) {
                 logError(error, 'System HUD: Error updating power info');
+                if (!screen || this._main_screen !== screen || this._closingMainScreen)
+                    return;
                 const themeColors = this._updateThemeColors();
                 updatePowerData({
                     powerBox: this._powerBox,
@@ -1497,7 +1670,7 @@ export class UIManager {
         if (this._coreBox) {
             const cpuInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getCPUInfo();
             this._displayCache.cpu = cpuInfo;
-            if (this._main_screen !== screen || this._closingMainScreen)
+            if (!screen || this._main_screen !== screen || this._closingMainScreen)
                 return;
             if (cachedInfo === undefined && cpuInfo === this._lastCPUInfo)
                 return;
@@ -1513,7 +1686,7 @@ export class UIManager {
                     this._cpuLoadHistory.shift();
                 this._cpuTemperatureHistory.push(cpuInfo.coreDetails.map(core => {
                     const temperature = Number.parseFloat(core.temp);
-                    return Number.isFinite(temperature) ? temperature : 0;
+                    return Number.isFinite(temperature) ? temperature : null;
                 }));
                 if (this._cpuTemperatureHistory.length > 60)
                     this._cpuTemperatureHistory.shift();
@@ -1531,8 +1704,8 @@ export class UIManager {
 
     async _updateAllInfo() {
         if (!this._main_screen || this._openingMainScreen || this._closingMainScreen ||
-            this._tabSwitchInProgress || this._tabHighlightLaterId) return;
-        if (this._processPage?.actor.visible) {
+            this._tabSwitchInProgress || this._pageSwitchInProgress || this._tabHighlightLaterId) return;
+        if (this._showingProcesses && this._processPage) {
             await this._processPage.refresh();
             return;
         }
@@ -1558,7 +1731,12 @@ export class UIManager {
         if (this._closingMainScreen && animate)
             return;
         this._openingMainScreen = false;
+        if (this._mainScreenTimeline) {
+            this._mainScreenTimeline.stop();
+            this._mainScreenTimeline = null;
+        }
         this._tabSwitchInProgress = false;
+        this._pageSwitchInProgress = false;
         if (this._openAnimationAllocationId && this._main_screen) {
             this._main_screen.disconnect(this._openAnimationAllocationId);
             this._openAnimationAllocationId = 0;
@@ -1602,12 +1780,7 @@ export class UIManager {
             if (animate) {
                 const target = this._getIndicatorAnimationTarget(screen);
                 screen.set_pivot_point(0.5, 0.5);
-                screen.ease({
-                    ...target, opacity: 0,
-                    duration: 360,
-                    mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
-                    onComplete: finish,
-                });
+                this._animateMainScreen(screen, { ...target, opacity: 0 }, false, finish);
             } else {
                 finish();
             }
@@ -1655,7 +1828,6 @@ export class UIManager {
             this._indicator = null;
         }
 
-        // Remove label animation timeouts
         if (this._labelTimeoutIds) {
             this._labelTimeoutIds.forEach(id => GLib.source_remove(id));
             this._labelTimeoutIds = [];
@@ -1675,5 +1847,10 @@ export class UIManager {
             GLib.source_remove(this._copyButtonTimeoutId);
             this._copyButtonTimeoutId = null;
         }
+        this._systemLink = null;
+        this._extension = null;
+        this._displayCache = {};
+        this._processSnapshot = [];
+        this._gpuHistories.clear();
     }
 }

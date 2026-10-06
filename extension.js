@@ -21,6 +21,9 @@ export default class SystemHUD extends Extension {
             this._uiManager.destroy();
             this._uiManager = null;
         }
-        this._systemLink = null;
+        if (this._systemLink) {
+            this._systemLink.destroy();
+            this._systemLink = null;
+        }
     }
-} 
+}

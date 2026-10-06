@@ -15,7 +15,7 @@ export class SystemModule extends BaseModule {
 
         let osName = 'Unknown OS';
         try {
-            const output = await this._executeCommand(['cat', '/etc/os-release']);
+            const output = await this._readFile('/etc/os-release');
             const lines = output.split('\n');
             for (const line of lines) {
                 if (line.startsWith('PRETTY_NAME=')) {
@@ -29,7 +29,7 @@ export class SystemModule extends BaseModule {
 
         let kernelVersion = 'Unknown Kernel';
         try {
-            kernelVersion = await this._executeCommand(['uname', '-r']);
+            kernelVersion = await this._readFile('/proc/sys/kernel/osrelease');
             kernelVersion = kernelVersion.trim();
         } catch (e) {
             logError(e, 'System HUD: Failed to get kernel version');
@@ -52,7 +52,6 @@ export class SystemModule extends BaseModule {
             logError(e, 'System HUD: Failed to get system architecture');
         }
 
-        // GNOME Shell version
         let gnomeVersion = 'Unknown GNOME';
         try {
             const gnomeOut = await this._executeCommand(['gnome-shell', '--version']);
@@ -69,7 +68,6 @@ export class SystemModule extends BaseModule {
             logError(e, 'System HUD: Failed to get GNOME version');
         }
 
-        // Session type (Wayland/X11)
         let sessionType = GLib.getenv('XDG_SESSION_TYPE') || 'Unknown';
         if (sessionType) sessionType = sessionType.charAt(0).toUpperCase() + sessionType.slice(1);
 
@@ -86,7 +84,7 @@ export class SystemModule extends BaseModule {
         }
 
         try {
-            const output = await this._executeCommand(['cat', '/proc/uptime']);
+            const output = await this._readFile('/proc/uptime');
             const uptimeSeconds = parseFloat(output.split(' ')[0]);
             const days = Math.floor(uptimeSeconds / 86400);
             const hours = Math.floor((uptimeSeconds % 86400) / 3600);

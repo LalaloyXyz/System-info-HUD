@@ -11,14 +11,15 @@ export class StorageModule extends BaseModule {
         }
 
         try {
-            const output = await this._executeCommand(['df', '-h']);
+            const output = await this._executeCommand(['df', '-hP']);
             const lines = output.trim().split("\n").slice(1);
             let result = [];
 
             for (let line of lines) {
                 const parts = line.trim().split(/\s+/);
                 if (parts.length >= 6) {
-                    const [filesystem, size, used, available, use_percent, mount] = parts;
+                    const [filesystem, size, used, available, use_percent, ...mountParts] = parts;
+                    const mount = mountParts.join(' ');
 
                     if (!filesystem.startsWith("/dev/")) continue;
 
