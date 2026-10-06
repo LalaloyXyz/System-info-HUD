@@ -139,6 +139,14 @@ Open the extension preferences to configure animations, refresh timing, HUD size
 
 ## 🤝 Contributing
 
+Build the upload archive with GNOME's packer rather than zipping the entire checkout:
+
+```sh
+gnome-extensions pack --force --extra-source=assets --extra-source=modules --extra-source=systemLink.js --extra-source=themeManager.js --extra-source=uiManager.js --extra-source=updateData.js --extra-source=processPage.js .
+```
+
+This includes the runtime modules and excludes the development-only `tests/` directory.
+
 Contributions, bug reports, and feature requests are welcome.
 
 If a metric is missing or incorrect, please include your distribution, GNOME Shell version, hardware, and the relevant optional tools installed on your system.

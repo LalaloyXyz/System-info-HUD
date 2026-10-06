@@ -1,5 +1,5 @@
 import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
+import { getProcessGpuCommand } from './processGpu.js';
 
 export class ProcessModule {
     constructor() {
@@ -49,9 +49,8 @@ export class ProcessModule {
         });
         if (pid === null) {
             try {
-                const helper = GLib.build_filenamev([GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]), 'processGpu.js']);
-                const { stdout: gpuOutput } = await this._execute(['gjs', '-m', helper,
-                    ...processes.filter(process => process.uid === this._uid).map(process => String(process.pid))]);
+                const pids = processes.filter(process => process.uid === this._uid).map(process => String(process.pid));
+                const { stdout: gpuOutput } = await this._execute(getProcessGpuCommand(pids));
                 this._updateGpu(processes, JSON.parse(gpuOutput));
             } catch (error) {
                 if (this._cancellable.is_cancelled())
