@@ -1,7 +1,7 @@
 {
   "uuid": "systemHUD@LalaloyXyz",
   "name": "System HUD",
-  "description": "Clean UI system monitor for CPU, GPU, memory, storage, network, power. Copies a system information report to the clipboard when you click the Copy button.",
+  "description": "Clean UI system monitor for CPU, GPU, memory, storage, network, power.",
   "version": 25,
   "shell-version": [
     "45", "46", "47", "48", "49", "50", "51"
