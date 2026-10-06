@@ -127,14 +127,6 @@ When CPU temperature sensors are unavailable on a single-socket AMD APU, the CPU
 
 Compatibility depends on the Linux driver, readable kernel interfaces, installed tools, and GNOME Shell APIs. This does not certify every CPU/GPU model or GNOME release. Desktop systems without a computer battery show **No battery found**; peripheral batteries are ignored.
 
-Collector regression checks (mock Intel/AMD/ARM, Intel i915/Xe, NVIDIA, multiple GPUs, and missing hardware/tools):
-
-```sh
-gjs -m tests/hardware.js
-```
-
-These checks do not replace a live HUD, preferences, clipboard, animation, and process-action test in GNOME Shell.
-
 ## 🚀 Usage
 
 1. Enable **System Info HUD**.
