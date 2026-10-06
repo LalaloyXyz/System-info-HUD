@@ -58,7 +58,14 @@ Designed to feel native to GNOME while remaining useful on a wide range of Linux
 
 ### 📋 Handy Utilities
 
-- Copy the visible system information to the clipboard
+- Switch between **System Status** and **Processes**
+- Search processes by name or PID and sort by CPU, GPU, or memory usage
+- Use **Apps only** to show processes associated with running windowed applications
+- End your own tasks with confirmation (sends SIGTERM; GNOME Shell is protected)
+- CPU on the Processes page is the process lifetime average; RAM is resident memory in MiB
+- Process GPU usage shows the busiest engine from readable DRM activity counters (including supported AMD/Intel drivers). The first sample and unsupported or inaccessible processes show **—**. This is interval usage; duplicate GPU descriptors are counted once.
+- CPU and GPU graphs scroll measured samples horizontally without changing their heights or peaks; animation pauses when the page is hidden.
+- Copy the system information to the clipboard
 - Adjustable refresh interval from 500 ms to 10 seconds
 - Optional CPU graph and power section
 - Graceful fallbacks when optional hardware tools are unavailable
@@ -87,7 +94,7 @@ Designed to feel native to GNOME while remaining useful on a wide range of Linux
 The extension reads system information from common Linux tools:
 
 ```text
-lscpu  free  df  ip  upower  cat  uname  gnome-shell  lspci
+lscpu  free  df  ip  upower  cat  uname  gnome-shell  lspci  ps  kill
 ```
 
 ### Optional tools

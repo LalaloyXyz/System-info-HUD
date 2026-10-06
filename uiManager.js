@@ -1,5 +1,8 @@
 import St from 'gi://St';
+import { ProcessPage } from './processPage.js';
+import { addButtonAnimation } from './modules/buttonAnimation.js';
 import Clutter from 'gi://Clutter';
+import Meta from 'gi://Meta';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -31,6 +34,10 @@ export class UIManager {
         this._extension = extension;
         this._systemLink = systemLink;
         this._main_screen = null;
+        this._closingMainScreen = false;
+        this._openingMainScreen = false;
+        this._tabHighlightLaterId = 0;
+        this._tabSwitchInProgress = false;
         this._updateTimeoutId = null;
         this._copyButtonTimeoutId = null;
         this._sectionRefreshTimeoutIds = [];
@@ -47,6 +54,8 @@ export class UIManager {
         };
         this._refreshIntervals = {};
         this._nextRefreshAt = {};
+        this._displayCache = {};
+        this._processSnapshot = [];
         this._osDetails = null;
         this._osHoverTimeoutId = null;
         this._themeManager = new ThemeManager();
@@ -170,6 +179,15 @@ export class UIManager {
     }
 
     _queueSectionRefresh(section, delayMs = 0) {
+        if (this._displayCache[section] !== undefined) {
+            this._runSectionUpdate(section, this._displayCache[section]).catch(error => {
+                logError(error, `System HUD: Error restoring ${section} section`);
+            });
+        }
+        if (this._openingMainScreen || this._tabSwitchInProgress) {
+            this._nextRefreshAt[section] = 0;
+            return;
+        }
         const timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delayMs, () => {
             this._sectionRefreshTimeoutIds = this._sectionRefreshTimeoutIds.filter(id => id !== timeoutId);
             this._runSectionUpdate(section).catch(error => {
@@ -188,31 +206,31 @@ export class UIManager {
         this._nextRefreshAt[section] = now + (this._refreshIntervals[section] || 1000);
     }
 
-    async _runSectionUpdate(section) {
+    async _runSectionUpdate(section, cachedInfo) {
         switch (section) {
         case 'device':
-            await this._updateDeviceInfo();
+            await this._updateDeviceInfo(cachedInfo);
             break;
         case 'network':
-            await this._updateNetworkInfo();
+            await this._updateNetworkInfo(cachedInfo);
             break;
         case 'memory':
-            await this._updateMemoryInfo();
+            await this._updateMemoryInfo(cachedInfo);
             break;
         case 'os':
-            await this._updateOSInfo();
+            await this._updateOSInfo(cachedInfo);
             break;
         case 'storage':
-            await this._updateStorageInfo();
+            await this._updateStorageInfo(cachedInfo);
             break;
         case 'power':
-            await this._updatePowerInfo();
+            await this._updatePowerInfo(cachedInfo);
             break;
         case 'cpu':
-            await this._updateCPUInfo();
+            await this._updateCPUInfo(cachedInfo);
             break;
         case 'gpu':
-            await this._updateGPUInfo();
+            await this._updateGPUInfo(cachedInfo);
             break;
         default:
             break;
@@ -321,6 +339,8 @@ export class UIManager {
     }
 
     _toggleMainScreenFromIndicator() {
+        if (this._closingMainScreen)
+            return;
         if (this._indicator.menu.isOpen)
             this._indicator.menu.close();
 
@@ -346,14 +366,6 @@ export class UIManager {
         if (this._main_screen) {
             const themeColors = this._updateThemeColors();
             
-            // Update main screen style
-            this._main_screen.style = `
-                background-color: ${themeColors.background};
-                border: 1px solid ${themeColors.accent};
-                border-radius: 18px;
-                box-shadow: 0 18px 45px rgba(0, 0, 0, 0.42);
-            `;
-
             this._profileBin.style =  `
                 background-image: url("file://${this._profileImagePath}");
                 background-size: cover;
@@ -363,14 +375,13 @@ export class UIManager {
             `;
 
             if (this._closeButton) {
-                this._closeButton.style = `background-color: #f44336;
+                this._closeButton.style = `background-color: #ff453a;
                     color: white; 
                     width: 34px;
-                    height: 34px; 
-                    border-radius: 8px; 
+                    border-radius: 18px;
                     border: 1px solid rgba(255, 255, 255, 0.24);
                     font-weight: bold;
-                    font-size: 14px;`;
+                    font-size: 18px;`;
             }
 
             updateDeviceSectionStyle({
@@ -413,6 +424,8 @@ export class UIManager {
                 gpuBox: this._gpuBox
             }, themeColors, St);
             this._updateGPUInfo();
+            if (this._processPage)
+                this._stylePageButtons();
         }
     }
 
@@ -488,23 +501,57 @@ export class UIManager {
     }
 
     async showMainScreen() {
-        const themeColors = this._updateThemeColors();
         const monitor = Main.layoutManager.primaryMonitor;
         const popupWidth = Math.floor(monitor.width * this._popupWidthPercent / 100);
         const popupHeight = Math.floor(monitor.height * this._popupHeightPercent / 100);
 
         this._main_screen = new St.BoxLayout({
-            orientation: Clutter.Orientation.HORIZONTAL,
-            style: `
-            background-color: ${themeColors.background};
-            border: 1px solid ${themeColors.accent};
-            border-radius: 18px;
-            box-shadow: 0 18px 45px rgba(0, 0, 0, 0.42);
-            `,
+            orientation: Clutter.Orientation.VERTICAL,
+            style: 'background-color: transparent;',
             reactive: true,
             can_focus: true,
             track_hover: true,
+            visible: false,
+            opacity: 0,
         });
+        const screen = this._main_screen;
+        this._openingMainScreen = true;
+
+        const navigation = new St.BoxLayout({ height: 54, style: 'padding: 0 6px 8px;' });
+        this._tabStrip = new St.Widget({ layout_manager: new Clutter.BinLayout() });
+        this._tabHighlight = new St.Widget({
+            x_align: Clutter.ActorAlign.START, y_align: Clutter.ActorAlign.CENTER,
+            x_expand: true, y_expand: true, reactive: false,
+        });
+        this._tabHighlightTarget = null;
+        this._tabStrip.add_child(this._tabHighlight);
+        this._tabButtons = new St.BoxLayout({ style: 'spacing: 4px;' });
+        this._tabStrip.add_child(this._tabButtons);
+        this._statusButton = new St.Button({ label: 'System Status', can_focus: true, style_class: 'button' });
+        this._processButton = new St.Button({ label: 'Processes', can_focus: true, style_class: 'button' });
+        for (const button of [this._statusButton, this._processButton])
+            addButtonAnimation(button, () => this._useAnimation);
+        this._tabButtons.add_child(this._statusButton);
+        this._tabButtons.add_child(this._processButton);
+        for (const button of [this._statusButton, this._processButton])
+            button.connect('notify::allocation', () => this._queueTabHighlight(false));
+        navigation.add_child(this._tabStrip);
+        navigation.add_child(new St.Widget({ x_expand: true }));
+        this._createHeaderButtons(navigation);
+        this._main_screen.add_child(navigation);
+        this._pageContainer = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL, x_expand: true, y_expand: true,
+        });
+        this._main_screen.add_child(this._pageContainer);
+        this._statusPage = new St.BoxLayout({ x_expand: true, y_expand: true });
+        this._pageContainer.add_child(this._statusPage);
+        this._processPage = new ProcessPage(this._processSnapshot, () => this._useAnimation);
+        this._pageContainer.add_child(this._processPage.actor);
+        this._statusButton.connect('clicked', () => this._switchPage(false));
+        this._processButton.connect('clicked', () => this._switchPage(true));
+        this._stylePageButtons();
+        this._switchPage(false);
+        const contentHeight = Math.max(100, popupHeight - 54);
 
         // Create columns
         const frontColumn = this._createColumn(Math.floor(popupWidth * 0.05));
@@ -515,12 +562,12 @@ export class UIManager {
         const backColumn = this._createColumn(Math.floor(popupWidth * 0.05));
 
         // Add columns to main screen
-        this._main_screen.add_child(frontColumn);
-        this._main_screen.add_child(leftColumn);
-        this._main_screen.add_child(betweenColumn);
-        this._main_screen.add_child(rightColumn);
-        this._main_screen.add_child(bebackColumn);
-        this._main_screen.add_child(backColumn);
+        this._statusPage.add_child(frontColumn);
+        this._statusPage.add_child(leftColumn);
+        this._statusPage.add_child(betweenColumn);
+        this._statusPage.add_child(rightColumn);
+        this._statusPage.add_child(bebackColumn);
+        this._statusPage.add_child(backColumn);
 
         // Enable dragging on non-button columns to avoid click conflicts.
         this._enableDrag(frontColumn);
@@ -529,7 +576,7 @@ export class UIManager {
         this._enableDrag(rightColumn);
         this._enableDrag(bebackColumn);
         
-        // Set size and immediately add to layout so animation can play without waiting for data
+        // Prepare the card offscreen before starting its entrance animation.
         this._main_screen.set_size(popupWidth, popupHeight);
         Main.layoutManager.addChrome(this._main_screen, {
             trackFullscreen: true,
@@ -545,38 +592,194 @@ export class UIManager {
                 }
                 return Clutter.EVENT_PROPAGATE;
             });
-            this._main_screen.grab_key_focus();
         } catch (error) {
             logError(error, 'System HUD: failed to bind Escape close shortcut');
             this._mainScreenKeyPressId = null;
         }
 
-        // Compute position and play animation immediately
-        const [_, natWidth] = this._main_screen.get_preferred_width(-1);
-        const [__, natHeight] = this._main_screen.get_preferred_height(-1);
-        const x = Math.floor((monitor.width - natWidth) / 2) + monitor.x;
-        const y = Math.floor((monitor.height - natHeight) / 2) + monitor.y;
+        await Promise.allSettled([
+            this._createLeftColumn(leftColumn, contentHeight),
+            this._createRightColumn(rightColumn, contentHeight),
+        ]);
+        if (!await this._prepareInitialData(screen))
+            return;
+
+        const x = Math.floor((monitor.width - popupWidth) / 2) + monitor.x;
+        const y = Math.floor((monitor.height - popupHeight) / 2) + monitor.y;
         if (this._useAnimation) {
-            this._main_screen.set_position(x, -natHeight);
-            this._main_screen.opacity = 0;
-            this._main_screen.ease({
-                y: y,
-                opacity: 255,
-                duration: 300,
-                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            this._animateOpen(screen, x, y);
+        } else {
+            this._openingMainScreen = false;
+            screen.set_position(x, y);
+            screen.opacity = 255;
+            screen.show();
+        }
+        screen.grab_key_focus();
+
+        this._setIndicatorTextVisible(false);
+        this._restartUpdateLoop();
+    }
+
+    async _prepareInitialData(screen) {
+        if (this._main_screen !== screen || this._closingMainScreen)
+            return false;
+        const sections = ['device', 'network', 'memory', 'os', 'storage', 'power', 'cpu', 'gpu'];
+        const missing = sections.filter(section => this._displayCache[section] === undefined);
+        await Promise.allSettled(missing.map(section => this._runSectionUpdate(section).then(() => {
+            this._markSectionRefreshed(section, Date.now());
+        })));
+        return this._main_screen === screen && !this._closingMainScreen;
+    }
+
+    _getIndicatorAnimationTarget(screen) {
+        const [buttonX, buttonY] = this._indicator.get_transformed_position();
+        const [buttonWidth, buttonHeight] = this._indicator.get_transformed_size();
+        const [width, height] = screen.get_size();
+        return {
+            x: buttonX + buttonWidth / 2 - width / 2,
+            y: buttonY + buttonHeight / 2 - height / 2,
+            scale_x: Math.min(1, Math.min(120, Math.max(64, buttonWidth)) / width),
+            scale_y: Math.min(1, Math.max(24, buttonHeight) / height),
+        };
+    }
+
+    _animateOpen(screen, x, y) {
+        const origin = this._getIndicatorAnimationTarget(screen);
+        screen.set_pivot_point(0.5, 0.5);
+        screen.set_position(origin.x, origin.y);
+        screen.set_scale(origin.scale_x, origin.scale_y);
+        this._openingMainScreen = true;
+        screen.opacity = 0;
+        // Let Shell allocate the hidden card at its origin before making it visible.
+        this._openAnimationAllocationId = screen.connect('notify::allocation', () => {
+            screen.disconnect(this._openAnimationAllocationId);
+            this._openAnimationAllocationId = 0;
+            this._openAnimationLaterId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+                this._openAnimationLaterId = 0;
+                if (this._main_screen !== screen || this._closingMainScreen)
+                    return GLib.SOURCE_REMOVE;
+                screen.opacity = 80;
+                screen.ease({
+                    x, y, scale_x: 1, scale_y: 1, opacity: 255,
+                    duration: 480,
+                    mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+                    onComplete: () => {
+                        if (this._main_screen === screen && !this._closingMainScreen)
+                            this._openingMainScreen = false;
+                    },
+                });
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+        screen.show();
+    }
+
+    _switchPage(showProcesses) {
+        if (!this._processPage)
+            return;
+        this._statusPage.visible = !showProcesses;
+        this._processPage.setVisible(showProcesses, false);
+        this._styleTabButtons();
+    }
+
+    _stylePageButtons() {
+        const colors = this._updateThemeColors();
+        this._tabStrip.set_style(`padding: 5px; spacing: 4px; background-color: ${colors.accent}; border-radius: 23px;`);
+        this._headerButtons.set_style(`padding: 5px; spacing: 8px; background-color: ${colors.background}; border-radius: 23px;`);
+        this._pageContainer.set_style(`background-color: ${colors.background}; border: 1px solid ${colors.accent}; border-radius: 28px; box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);`);
+        this._tabHighlight.set_style(`background-color: ${colors.isDark ? '#636366' : colors.surface}; border-radius: 18px;`);
+        this._styleTabButtons();
+        this._processPage.setTheme(colors);
+    }
+
+    _styleTabButtons() {
+        const colors = this._updateThemeColors();
+        const showProcesses = this._processPage.actor.visible;
+        for (const [button, active] of [[this._statusButton, !showProcesses], [this._processButton, showProcesses]])
+            button.set_style(`padding: 8px 16px; border-radius: 18px; font-size: 12px; font-weight: 600; background-color: transparent; color: ${active ? colors.text : colors.secondaryText};`);
+        this._queueTabHighlight(this._useAnimation);
+    }
+
+    _queueTabHighlight(animate) {
+        if (!this._processPage || this._closingMainScreen)
+            return;
+        if (this._tabHighlightLaterId)
+            return;
+        this._tabHighlightLaterId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+            this._tabHighlightLaterId = 0;
+            this._moveTabHighlight(animate);
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _moveTabHighlight(animate = this._useAnimation) {
+        if (!this._processPage || this._closingMainScreen)
+            return;
+        const button = this._processPage.actor.visible ? this._processButton : this._statusButton;
+        if (!button.has_allocation())
+            return;
+        const [x, y] = button.get_position();
+        const [width, height] = button.get_size();
+        const [baseWidth, baseHeight] = this._statusButton.get_size();
+        if (baseWidth <= 0 || baseHeight <= 0)
+            return;
+        const [highlightWidth, highlightHeight] = this._tabHighlight.get_size();
+        if (highlightWidth !== baseWidth || highlightHeight !== baseHeight)
+            this._tabHighlight.set_size(baseWidth, baseHeight);
+        const target = {
+            translation_x: x, translation_y: y,
+            scale_x: width / baseWidth, scale_y: height / baseHeight,
+        };
+        if (this._tabHighlightTarget && Object.keys(target).every(key =>
+            this._tabHighlightTarget[key] === target[key]))
+            return;
+        const initialized = this._tabHighlightTarget !== null;
+        this._tabHighlightTarget = target;
+        if (animate && initialized) {
+            this._tabSwitchInProgress = true;
+            this._tabHighlight.ease({
+                ...target, duration: 200, mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+                onComplete: () => {
+                    this._tabSwitchInProgress = false;
+                    this._processPage?.refresh();
+                },
             });
         } else {
-            this._main_screen.set_position(x, y);
-            this._main_screen.opacity = 255;
+            this._tabSwitchInProgress = false;
+            this._tabHighlight.remove_all_transitions();
+            this._tabHighlight.set_scale(target.scale_x, target.scale_y);
+            this._tabHighlight.translation_x = x;
+            this._tabHighlight.translation_y = y;
         }
+    }
 
-        // Populate UI components asynchronously so they don't block the entrance animation
-        this._createBackColumn(backColumn, popupHeight); // synchronous
-        // Start population in background (parallel, not blocking entrance animation)
-        this._createLeftColumn(leftColumn, popupHeight).catch(e => log(e));
-        this._createRightColumn(rightColumn, popupHeight).catch(e => log(e));
-
-        this._restartUpdateLoop();
+    _setIndicatorTextVisible(visible, animate = this._useAnimation) {
+        if (!this._label)
+            return;
+        if (!visible) {
+            this._labelTimeoutIds.forEach(id => GLib.source_remove(id));
+            this._labelTimeoutIds = [];
+        } else {
+            this._label.text = 'Info';
+        }
+        this._label.remove_all_transitions();
+        this._label.set_pivot_point(0.5, 0.5);
+        const target = {
+            opacity: visible ? 255 : 0,
+            scale_x: visible ? 1 : 0.6,
+            scale_y: visible ? 1 : 0.6,
+            translation_y: visible ? 0 : -4,
+        };
+        if (animate) {
+            this._label.ease({
+                ...target, duration: visible ? 240 : 180,
+                mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+            });
+        } else {
+            this._label.opacity = target.opacity;
+            this._label.set_scale(target.scale_x, target.scale_y);
+            this._label.translation_y = target.translation_y;
+        }
     }
 
     async _createLeftColumn(column, popupHeight) {
@@ -659,23 +862,19 @@ export class UIManager {
         await Promise.allSettled(tasks);
     }
 
-    _createBackColumn(column, popupHeight) {
-        const topEndColumn = this._createColumn(null, Math.floor(popupHeight * 0.1));
-        column.add_child(topEndColumn);
-
-        const themeColors = this._updateThemeColors();
+    _createHeaderButtons(navigation) {
         const buttonsRow = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+            orientation: Clutter.Orientation.HORIZONTAL,
             x_align: Clutter.ActorAlign.END,
-            x_expand: true,
+            y_align: Clutter.ActorAlign.FILL,
             style: 'spacing: 6px;'
         });
 
         const buttonConfigs = [
             {
                 key: 'close',
-                label: 'X',
-                bg: '#f44336',
+                label: '×',
+                bg: '#ff453a',
                 onClick: () => {
                     this._indicator.remove_style_class_name('active');
                     this.destroyMainScreen();
@@ -684,10 +883,10 @@ export class UIManager {
         ];
 
         if (this._showCopyButton) {
-            buttonConfigs.push({
+            buttonConfigs.unshift({
                 key: 'copy',
                 iconPath: `${this._extension.path}/assets/copy-symbolic.svg`,
-                bg: '#1e88e5',
+                bg: '#0a84ff',
                 onClick: () => {
                     this._copySystemInfoToClipboard().catch((error) => {
                         logError(error, 'System HUD: Error copying info');
@@ -701,11 +900,10 @@ export class UIManager {
                 style: `background-color: ${cfg.bg};
                         color: white;
                         width: 34px; 
-                        height: 34px; 
-                        border-radius: 8px; 
+                        border-radius: 18px;
                         border: 1px solid rgba(255, 255, 255, 0.24);
                         font-weight: bold;
-                        font-size: 14px;`,
+                        font-size: 18px;`,
             });
             if (cfg.iconPath) {
                 button.set_child(new St.Icon({
@@ -715,6 +913,7 @@ export class UIManager {
             } else {
                 button.label = cfg.label;
             }
+            addButtonAnimation(button, () => this._useAnimation);
             button.connect('clicked', cfg.onClick);
 
             if (cfg.key === 'copy')
@@ -724,7 +923,8 @@ export class UIManager {
 
             buttonsRow.add_child(button);
         }
-        topEndColumn.add_child(buttonsRow);
+        this._headerButtons = buttonsRow;
+        navigation.add_child(buttonsRow);
     }
 
     async _copySystemInfoToClipboard() {
@@ -1140,27 +1340,33 @@ export class UIManager {
         this._queueSectionRefresh('gpu', 0);
     }
 
-    async _updateGPUInfo() {
+    async _updateGPUInfo(cachedInfo) {
+        const screen = this._main_screen;
         if (this._gpuBox) {
             const themeColors = this._updateThemeColors();
-            const gpuInfo = await this._systemLink.getGPUInfo();
-            const memoryMatch = gpuInfo?.match(/(?:Memory Usage|VRAM):\s*[\d.]+\s*MB\s*\/\s*[\d.]+\s*(?:GB|MB)\s*\|\s*([\d.]+)%/);
-            const temperatureMatch = gpuInfo?.match(/Temp:\s*([\d.]+)\s*°C/);
-            const loadMatch = gpuInfo?.match(/GPU Utilization:\s*([\d.]+)%/);
-            if (memoryMatch) {
-                this._gpuMemoryHistory.push(Number.parseFloat(memoryMatch[1]));
-                if (this._gpuMemoryHistory.length > 60)
-                    this._gpuMemoryHistory.shift();
-            }
-            if (temperatureMatch) {
-                this._gpuTemperatureHistory.push(Number.parseFloat(temperatureMatch[1]));
-                if (this._gpuTemperatureHistory.length > 60)
-                    this._gpuTemperatureHistory.shift();
-            }
-            if (loadMatch) {
-                this._gpuLoadHistory.push(Number.parseFloat(loadMatch[1]));
-                if (this._gpuLoadHistory.length > 60)
-                    this._gpuLoadHistory.shift();
+            const gpuInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getGPUInfo();
+            this._displayCache.gpu = gpuInfo;
+            if (this._main_screen !== screen || this._closingMainScreen)
+                return;
+            if (cachedInfo === undefined) {
+                const memoryMatch = gpuInfo?.match(/(?:Memory Usage|VRAM):\s*[\d.]+\s*MB\s*\/\s*[\d.]+\s*(?:GB|MB)\s*\|\s*([\d.]+)%/);
+                const temperatureMatch = gpuInfo?.match(/Temp:\s*([\d.]+)\s*°C/);
+                const loadMatch = gpuInfo?.match(/GPU Utilization:\s*([\d.]+)%/);
+                if (memoryMatch) {
+                    this._gpuMemoryHistory.push(Number.parseFloat(memoryMatch[1]));
+                    if (this._gpuMemoryHistory.length > 60)
+                        this._gpuMemoryHistory.shift();
+                }
+                if (temperatureMatch) {
+                    this._gpuTemperatureHistory.push(Number.parseFloat(temperatureMatch[1]));
+                    if (this._gpuTemperatureHistory.length > 60)
+                        this._gpuTemperatureHistory.shift();
+                }
+                if (loadMatch) {
+                    this._gpuLoadHistory.push(Number.parseFloat(loadMatch[1]));
+                    if (this._gpuLoadHistory.length > 60)
+                        this._gpuLoadHistory.shift();
+                }
             }
             updateGPUData({
                 gpuBox: this._gpuBox,
@@ -1169,19 +1375,29 @@ export class UIManager {
                 gpuTemperatureHistory: this._gpuTemperatureHistory,
                 gpuLoadHistory: this._gpuLoadHistory,
                 showGraph: this._showGpuGraph,
+                sampleInterval: this._refreshIntervalMs * this._refreshMultipliers.gpu,
+                animationsEnabled: this._useAnimation,
             }, gpuInfo, themeColors, St);
         }
     }
 
-    async _updateDeviceInfo() {
+    async _updateDeviceInfo(cachedInfo) {
+        const screen = this._main_screen;
         if (this._deviceWithUptime) {
-            const uptime = await this._systemLink.getUptime();
+            const uptime = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getUptime();
+            this._displayCache.device = uptime;
+            if (this._main_screen !== screen || this._closingMainScreen)
+                return;
             updateDeviceData({ deviceWithUptime: this._deviceWithUptime }, uptime);
         }
     }
 
-    async _updateNetworkInfo() {
-        const networkInfo = await this._systemLink.getNetworkInfo();
+    async _updateNetworkInfo(cachedInfo) {
+        const screen = this._main_screen;
+        const networkInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getNetworkInfo();
+        this._displayCache.network = networkInfo;
+        if (this._main_screen !== screen || this._closingMainScreen)
+            return;
         updateNetworkData({
             wifiSpeedLabel: this._wifiSpeedLabel,
             publicIPLabel: this._publicIPLabel,
@@ -1189,10 +1405,14 @@ export class UIManager {
         }, networkInfo);
     }
 
-    async _updateMemoryInfo() {
+    async _updateMemoryInfo(cachedInfo) {
+        const screen = this._main_screen;
         if (this._memoryBox || (this._memoryUse && this._memoryCache)) {
             try {
-                const memoryInfo = await this._systemLink.getMemoryInfo();
+                const memoryInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getMemoryInfo();
+                this._displayCache.memory = memoryInfo;
+                if (this._main_screen !== screen || this._closingMainScreen)
+                    return;
                 const themeColors = this._updateThemeColors();
                 updateMemoryData({
                     memoryBox: this._memoryBox,
@@ -1213,12 +1433,16 @@ export class UIManager {
         }
     }
 
-    async _updateOSInfo() {
+    async _updateOSInfo(cachedInfo) {
+        const screen = this._main_screen;
         if (!this._device_OS || !this._device_Kernel)
             return;
 
         try {
-            const systemInfo = await this._systemLink.getSystemInfo();
+            const systemInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getSystemInfo();
+            this._displayCache.os = systemInfo;
+            if (this._main_screen !== screen || this._closingMainScreen)
+                return;
             this._osDetails = systemInfo;
             updateOSData({
                 device_OS: this._device_OS,
@@ -1232,18 +1456,26 @@ export class UIManager {
         }
     }
 
-    async _updateStorageInfo() {
+    async _updateStorageInfo(cachedInfo) {
+        const screen = this._main_screen;
         if (this._storageBox) {
-            const storageInfo = await this._systemLink.getStorageInfo();
+            const storageInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getStorageInfo();
+            this._displayCache.storage = storageInfo;
+            if (this._main_screen !== screen || this._closingMainScreen)
+                return;
             const themeColors = this._updateThemeColors();
             updateStorageData({ storageBox: this._storageBox }, storageInfo, themeColors, St);
         }
     }
 
-    async _updatePowerInfo() {
+    async _updatePowerInfo(cachedInfo) {
+        const screen = this._main_screen;
         if (this._powerShow || this._powerBox) {
             try {
-                const powerInfo = await this._systemLink.getPowerInfo();
+                const powerInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getPowerInfo();
+                this._displayCache.power = powerInfo;
+                if (this._main_screen !== screen || this._closingMainScreen)
+                    return;
                 const themeColors = this._updateThemeColors();
                 updatePowerData({
                     powerBox: this._powerBox,
@@ -1260,29 +1492,36 @@ export class UIManager {
         }
     }
 
-    async _updateCPUInfo() {
+    async _updateCPUInfo(cachedInfo) {
+        const screen = this._main_screen;
         if (this._coreBox) {
-            const cpuInfo = await this._systemLink.getCPUInfo();
-            if (cpuInfo === this._lastCPUInfo)
+            const cpuInfo = cachedInfo !== undefined ? cachedInfo : await this._systemLink.getCPUInfo();
+            this._displayCache.cpu = cpuInfo;
+            if (this._main_screen !== screen || this._closingMainScreen)
+                return;
+            if (cachedInfo === undefined && cpuInfo === this._lastCPUInfo)
                 return;
 
             if (!Array.isArray(cpuInfo.coreDetails))
                 return;
 
-            this._cpuLoadHistory.push(cpuInfo.coreDetails.map(core =>
-                Number.isFinite(core.load) ? core.load : 0
-            ));
-            if (this._cpuLoadHistory.length > 60)
-                this._cpuLoadHistory.shift();
-            this._cpuTemperatureHistory.push(cpuInfo.coreDetails.map(core => {
-                const temperature = Number.parseFloat(core.temp);
-                return Number.isFinite(temperature) ? temperature : 0;
-            }));
-            if (this._cpuTemperatureHistory.length > 60)
-                this._cpuTemperatureHistory.shift();
+            if (cachedInfo === undefined) {
+                this._cpuLoadHistory.push(cpuInfo.coreDetails.map(core =>
+                    Number.isFinite(core.load) ? core.load : 0
+                ));
+                if (this._cpuLoadHistory.length > 60)
+                    this._cpuLoadHistory.shift();
+                this._cpuTemperatureHistory.push(cpuInfo.coreDetails.map(core => {
+                    const temperature = Number.parseFloat(core.temp);
+                    return Number.isFinite(temperature) ? temperature : 0;
+                }));
+                if (this._cpuTemperatureHistory.length > 60)
+                    this._cpuTemperatureHistory.shift();
+            }
             this._lastCPUInfo = cpuInfo;
             const themeColors = this._updateThemeColors();
-            updateCPUData({ cpuName: this._cpuName, coreBox: this._coreBox, showGraph: this._showCpuGraph, cpuCoreColors: this._cpuCoreColors }, {
+            updateCPUData({ cpuName: this._cpuName, coreBox: this._coreBox, showGraph: this._showCpuGraph, cpuCoreColors: this._cpuCoreColors,
+                sampleInterval: this._refreshIntervalMs * this._refreshMultipliers.cpu, animationsEnabled: this._useAnimation }, {
                 ...cpuInfo,
                 loadHistory: this._cpuLoadHistory,
                 temperatureHistory: this._cpuTemperatureHistory
@@ -1291,7 +1530,12 @@ export class UIManager {
     }
 
     async _updateAllInfo() {
-        if (!this._main_screen) return;
+        if (!this._main_screen || this._openingMainScreen || this._closingMainScreen ||
+            this._tabSwitchInProgress || this._tabHighlightLaterId) return;
+        if (this._processPage?.actor.visible) {
+            await this._processPage.refresh();
+            return;
+        }
         const now = Date.now();
         const sections = ['device', 'network', 'memory', 'os', 'storage', 'power', 'cpu', 'gpu'];
         const tasks = [];
@@ -1310,30 +1554,62 @@ export class UIManager {
 
 
 
-    destroyMainScreen() {
+    destroyMainScreen(animate = this._useAnimation) {
+        if (this._closingMainScreen && animate)
+            return;
+        this._openingMainScreen = false;
+        this._tabSwitchInProgress = false;
+        if (this._openAnimationAllocationId && this._main_screen) {
+            this._main_screen.disconnect(this._openAnimationAllocationId);
+            this._openAnimationAllocationId = 0;
+        }
+        if (this._openAnimationLaterId) {
+            global.compositor.get_laters().remove(this._openAnimationLaterId);
+            this._openAnimationLaterId = 0;
+        }
+        if (this._tabHighlightLaterId) {
+            global.compositor.get_laters().remove(this._tabHighlightLaterId);
+            this._tabHighlightLaterId = 0;
+        }
+        for (const property of ['_osHoverTimeoutId', '_copyButtonTimeoutId']) {
+            if (this[property]) {
+                GLib.source_remove(this[property]);
+                this[property] = null;
+            }
+        }
+        if (this._processPage) {
+            this._processSnapshot = this._processPage.getSnapshot();
+            this._processPage.destroy();
+            this._processPage = null;
+        }
         if (this._main_screen) {
             if (this._mainScreenKeyPressId) {
                 this._main_screen.disconnect(this._mainScreenKeyPressId);
                 this._mainScreenKeyPressId = null;
             }
-            const [x, y] = this._main_screen.get_position();
-            const [_, natHeight] = this._main_screen.get_preferred_height(-1);
-            if (this._useAnimation) {
-                this._main_screen.ease({
-                    y: y - natHeight,
-                    opacity: 0,
-                    duration: 300,
-                    mode: Clutter.AnimationMode.EASE_IN_QUAD,
-                    onComplete: () => {
-                        Main.layoutManager.removeChrome(this._main_screen);
-                        this._main_screen.destroy();
-                        this._main_screen = null;
-                    }
+            const screen = this._main_screen;
+            this._closingMainScreen = true;
+            screen.remove_all_transitions();
+            const finish = () => {
+                Main.layoutManager.removeChrome(screen);
+                screen.destroy();
+                if (this._main_screen === screen) {
+                    this._main_screen = null;
+                    this._closingMainScreen = false;
+                    this._setIndicatorTextVisible(true, animate);
+                }
+            };
+            if (animate) {
+                const target = this._getIndicatorAnimationTarget(screen);
+                screen.set_pivot_point(0.5, 0.5);
+                screen.ease({
+                    ...target, opacity: 0,
+                    duration: 360,
+                    mode: Clutter.AnimationMode.EASE_IN_OUT_CUBIC,
+                    onComplete: finish,
                 });
             } else {
-                Main.layoutManager.removeChrome(this._main_screen);
-                this._main_screen.destroy();
-                this._main_screen = null;
+                finish();
             }
         }
 
@@ -1351,7 +1627,7 @@ export class UIManager {
     }
 
     destroy() {
-        this.destroyMainScreen();
+        this.destroyMainScreen(false);
 
         if (this._settings) {
             for (const id of this._settingsSignalIds) {

@@ -3,12 +3,83 @@
 
 import Clutter from 'gi://Clutter';
 import Cairo from 'cairo';
+import GLib from 'gi://GLib';
 
 const DETAIL_LABEL_STYLE = 'font-weight: bold; font-size: 11px;';
 const HELP_LABEL_STYLE = 'font-weight: bold; font-size: 10px;';
 const cpuGraphActors = new WeakMap();
 const gpuGraphActors = new WeakMap();
 const cpuGraphColors = new WeakMap();
+const graphMotion = new WeakMap();
+const graphOptions = new WeakMap();
+
+function graphHistory(graph, fallback) {
+    return graphMotion.get(graph)?.target ?? fallback;
+}
+
+function graphScroll(graph) {
+    const motion = graphMotion.get(graph);
+    if (!motion?.enabled)
+        return 0;
+    const progress = Math.min(1, (GLib.get_monotonic_time() / 1000 - motion.started) / motion.duration);
+    return motion.offset * (1 - progress);
+}
+
+function graphSampleX(graph, index, count) {
+    const guard = graphMotion.has(graph) ? 1 : 0;
+    return (index - guard + graphScroll(graph)) / Math.max(1, count - 1 - guard);
+}
+
+function updateGraphMotion(graph, history, box) {
+    if (!history?.length)
+        return;
+    const options = graphOptions.get(box) ?? { interval: 2500, enabled: true };
+    const target = [...Array.from({ length: Math.max(0, 60 - history.length) }, () => history[0]), ...history]
+        .map(sample => Array.isArray(sample) ? sample.slice() : sample);
+    let motion = graphMotion.get(graph);
+    const changed = motion && (history.length !== motion.history.length ||
+        history.some((sample, index) => sample !== motion.history[index]));
+    const offset = changed ? graphScroll(graph) + 1 : 0;
+    // Retain the departing sample so scrolling does not leave a gap at the left edge.
+    target.unshift(changed ? motion.target[1] : target[0]);
+    if (!motion) {
+        motion = { target, history: history.slice(), offset: 0, started: 0, duration: 1, timer: 0 };
+        graphMotion.set(graph, motion);
+        const stop = () => {
+            if (motion.timer) {
+                GLib.source_remove(motion.timer);
+                motion.timer = 0;
+            }
+        };
+        motion.start = () => {
+            if (motion.timer || !graph.mapped || !motion.enabled || graphScroll(graph) <= 0)
+                return;
+            motion.timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT_IDLE, 33, () => {
+                graph.queue_repaint();
+                if (GLib.get_monotonic_time() / 1000 - motion.started >= motion.duration) {
+                    motion.timer = 0;
+                    return GLib.SOURCE_REMOVE;
+                }
+                return GLib.SOURCE_CONTINUE;
+            });
+        };
+        graph.connect('notify::mapped', () => graph.mapped ? motion.start() : stop());
+        graph.connect('destroy', stop);
+    }
+    if (!changed && motion.enabled === options.enabled) {
+        graph.queue_repaint();
+        return;
+    }
+    motion.target = target;
+    motion.history = history.slice();
+    motion.offset = offset;
+    motion.started = GLib.get_monotonic_time() / 1000;
+    motion.enabled = options.enabled;
+    // Cover the update loop's next tick and collection jitter without extrapolating values.
+    motion.duration = options.enabled ? Math.max(33, options.interval + 500) : 1;
+    motion.start();
+    graph.queue_repaint();
+}
 
 const TOOL_HELP = {
     cpuInfo: 'Need: lscpu (util-linux).',
@@ -222,11 +293,12 @@ function addGpuGraph(gpuBox, label, history, type, themeColors, St, unit = '%', 
         const bottom = 14;
         const plotWidth = Math.max(1, width - left - right);
         const plotHeight = Math.max(1, height - top - bottom);
-        const visibleHistory = history.length < 60
-            ? [...Array.from({ length: 60 - history.length }, () => history[0]), ...history]
-            : history;
+        const samples = graphHistory(area, history);
+        const visibleHistory = samples.length < 60
+            ? [...Array.from({ length: 60 - samples.length }, () => samples[0]), ...samples]
+            : samples;
         const point = (index, value) => [
-            visibleHistory.length === 1 ? left + plotWidth : left + (index / (visibleHistory.length - 1)) * plotWidth,
+            visibleHistory.length === 1 ? left + plotWidth : left + graphSampleX(area, index, visibleHistory.length) * plotWidth,
             top + plotHeight - (Math.max(0, Math.min(maxValue, value)) / maxValue) * plotHeight
         ];
 
@@ -243,6 +315,9 @@ function addGpuGraph(gpuBox, label, history, type, themeColors, St, unit = '%', 
             cr.showText(`${level}${unit}`);
         }
 
+        cr.save();
+        cr.rectangle(left, top, plotWidth, plotHeight);
+        cr.clip();
         const points = visibleHistory.map((value, index) => point(index, value));
         cr.setLineWidth(2.5);
         cr.setLineCap(Cairo.LineCap.ROUND);
@@ -266,12 +341,13 @@ function addGpuGraph(gpuBox, label, history, type, themeColors, St, unit = '%', 
         cr.setSourceRGB(red, green, blue);
         cr.arc(x, y, 3, 0, Math.PI * 2);
         cr.fill();
+        cr.restore();
         });
         graphs.set(graphKey, graph);
         gpuGraphActors.set(gpuBox, graphs);
     }
     gpuBox.add_child(graph);
-    graph.queue_repaint();
+    updateGraphMotion(graph, history, gpuBox);
 }
 
 function clearBox(box) {
@@ -436,9 +512,9 @@ function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St, customC
         const plotWidth = Math.max(1, width - left - right);
         const plotHeight = Math.max(1, height - top - bottom);
         const currentValues = coreDetails.map(core => Math.max(0, Math.min(100, Number(core.load) || 0)));
-        const history = Array.isArray(loadHistory) && loadHistory.length > 0
+        const history = graphHistory(area, Array.isArray(loadHistory) && loadHistory.length > 0
             ? loadHistory
-            : [currentValues];
+            : [currentValues]);
         const coreCount = Math.max(currentValues.length, ...history.map(sample => sample.length));
         const visibleHistory = history.length < 60
             ? [...Array.from({ length: 60 - history.length }, () => history[0]), ...history]
@@ -462,12 +538,15 @@ function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St, customC
         const point = (sampleIndex, coreIndex) => {
             const x = (visibleHistory.length === 1
                 ? left + plotWidth
-                : left + (sampleIndex / (visibleHistory.length - 1)) * plotWidth);
+                : left + graphSampleX(area, sampleIndex, visibleHistory.length) * plotWidth);
             const value = Math.max(0, Math.min(100, Number(visibleHistory[sampleIndex]?.[coreIndex]) || 0));
             const y = top + plotHeight - (value / 100) * plotHeight;
             return [x, y];
         };
 
+        cr.save();
+        cr.rectangle(left, top, plotWidth, plotHeight);
+        cr.clip();
         cr.setLineWidth(2);
         cr.setLineCap(Cairo.LineCap.ROUND);
         for (let coreIndex = 0; coreIndex < coreCount; coreIndex++) {
@@ -481,6 +560,7 @@ function addCPUGraph(coreBox, coreDetails, loadHistory, themeColors, St, customC
             cr.arc(x, y, 2.5, 0, Math.PI * 2);
             cr.fill();
         }
+        cr.restore();
     });
 
     cpuGraphColors.set(graph, customColors);
@@ -509,9 +589,9 @@ function addCPUTemperatureGraph(coreBox, coreDetails, temperatureHistory, themeC
             const value = parseFloat(core.temp);
             return Number.isFinite(value) ? value : 0;
         });
-        const history = Array.isArray(temperatureHistory) && temperatureHistory.length > 0
+        const history = graphHistory(area, Array.isArray(temperatureHistory) && temperatureHistory.length > 0
             ? temperatureHistory
-            : [currentValues];
+            : [currentValues]);
         const coreCount = Math.max(currentValues.length, ...history.map(sample => sample.length));
         const visibleHistory = history.length < 60
             ? [...Array.from({ length: 60 - history.length }, () => history[0]), ...history]
@@ -538,13 +618,16 @@ function addCPUTemperatureGraph(coreBox, coreDetails, temperatureHistory, themeC
         const point = (sampleIndex, coreIndex) => {
             const x = visibleHistory.length === 1
                 ? left + plotWidth
-                : left + (sampleIndex / (visibleHistory.length - 1)) * plotWidth;
+                : left + graphSampleX(area, sampleIndex, visibleHistory.length) * plotWidth;
             const rawValue = Number(visibleHistory[sampleIndex]?.[coreIndex]);
             const value = Number.isFinite(rawValue) ? Math.max(minTemp, Math.min(maxTemp, rawValue)) : minTemp;
             const y = top + plotHeight - ((value - minTemp) / (maxTemp - minTemp)) * plotHeight;
             return [x, y];
         };
 
+        cr.save();
+        cr.rectangle(left, top, plotWidth, plotHeight);
+        cr.clip();
         cr.setLineWidth(2.5);
         cr.setLineCap(Cairo.LineCap.ROUND);
         for (let coreIndex = 0; coreIndex < coreCount; coreIndex++) {
@@ -572,6 +655,7 @@ function addCPUTemperatureGraph(coreBox, coreDetails, temperatureHistory, themeC
             cr.arc(x, y, 3, 0, Math.PI * 2);
             cr.fill();
         }
+        cr.restore();
     });
 
     coreBox.add_child(graph);
@@ -627,7 +711,7 @@ function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true, cpuCore
             coreBox.add_child(loadGraph);
             cpuGraphColors.set(loadGraph, cpuCoreColors);
         }
-        loadGraph.queue_repaint();
+        updateGraphMotion(loadGraph, cpuInfo.loadHistory, coreBox);
         const temperatureSummary = currentTemperature === null
             ? 'Core Temperature'
             : `Core Temperature  ·  Current ${currentTemperature}°C  ·  Peak ${peakTemperature}°C`;
@@ -635,8 +719,8 @@ function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true, cpuCore
         const temperatureGraph = graphs[1] || addCPUTemperatureGraph(coreBox, cpuInfo.coreDetails, cpuInfo.temperatureHistory, themeColors, St);
         if (graphs[1]) {
             coreBox.add_child(temperatureGraph);
-            temperatureGraph.queue_repaint();
         }
+        updateGraphMotion(temperatureGraph, cpuInfo.temperatureHistory, coreBox);
         cpuGraphActors.set(coreBox, [loadGraph, temperatureGraph]);
     }
 
@@ -825,7 +909,7 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpu
     }
 }
 
-export function updateCPUData({ cpuName, coreBox, showGraph = true, cpuCoreColors = [] }, cpuInfo, themeColors, St) {
+export function updateCPUData({ cpuName, coreBox, showGraph = true, cpuCoreColors = [], sampleInterval = 2500, animationsEnabled = true }, cpuInfo, themeColors, St) {
     if (!St && themeColors?.Label) {
         St = themeColors;
         themeColors = null;
@@ -837,6 +921,7 @@ export function updateCPUData({ cpuName, coreBox, showGraph = true, cpuCoreColor
     if (cpuName && cpuInfo)
         cpuName.text = `${cpuInfo.cpu} x ${cpuInfo.core}`;
     if (coreBox && cpuInfo && Array.isArray(cpuInfo.coreDetails)) {
+        graphOptions.set(coreBox, { interval: sampleInterval, enabled: animationsEnabled });
         setCPURows(coreBox, cpuInfo, themeColors, St, showGraph, cpuCoreColors);
     } else if (coreBox && cpuInfo && cpuInfo.coreSpeeds) {
         const lines = cpuInfo.coreSpeeds.map(text => ({ text, style: labelStyle }));
@@ -1029,8 +1114,9 @@ export function updateDeviceData({ deviceWithUptime }, uptime) {
     if (deviceWithUptime) deviceWithUptime.text = uptime;
 }
 
-export function updateGPUData({ gpuBox, gpuHead, gpuMemoryHistory = [], gpuTemperatureHistory = [], gpuLoadHistory = [], showGraph = true }, gpuInfo, themeColors, St) {
+export function updateGPUData({ gpuBox, gpuHead, gpuMemoryHistory = [], gpuTemperatureHistory = [], gpuLoadHistory = [], showGraph = true, sampleInterval = 5000, animationsEnabled = true }, gpuInfo, themeColors, St) {
     if (gpuBox) {
+        graphOptions.set(gpuBox, { interval: sampleInterval, enabled: animationsEnabled });
         if (gpuHead)
             gpuHead.set_style(`color: ${themeColors.secondaryText}; font-weight: bold; font-size: 13px;`);
         const detailStyle = `color: ${themeColors.text}; font-weight: bold; font-size: 11px;`;

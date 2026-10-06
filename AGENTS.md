@@ -9,7 +9,7 @@ This repository is a GNOME Shell extension. The root JavaScript files handle ext
 There is no separate build system or automated test suite in the repository. Use the GNOME tooling to validate and package changes:
 
 - `glib-compile-schemas schemas/` compiles settings after schema edits. Do not commit the generated `schemas/gschemas.compiled` file.
-- `gnome-extensions pack --force --extra-source=assets --extra-source=modules --extra-source=systemLink.js --extra-source=themeManager.js --extra-source=uiManager.js --extra-source=updateData.js` creates a complete installable archive. GNOME's packer otherwise omits these imported files.
+- `gnome-extensions pack --force --extra-source=assets --extra-source=modules --extra-source=systemLink.js --extra-source=themeManager.js --extra-source=uiManager.js --extra-source=updateData.js --extra-source=processPage.js` creates a complete installable archive. GNOME's packer otherwise omits these imported files.
 - `gnome-extensions install --force systemHUD@LalaloyXyz.shell-extension.zip` installs the archive locally.
 - After installing or updating, run `glib-compile-schemas ~/.local/share/gnome-shell/extensions/systemHUD@LalaloyXyz/schemas/` so the installed compiled schema includes newly added keys.
 - `gnome-extensions enable systemHUD@LalaloyXyz` enables it for the current user.

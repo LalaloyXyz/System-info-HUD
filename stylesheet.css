@@ -1,0 +1,7 @@
+.process-row:hover, .process-row:focus {
+    box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.35);
+}
+
+.systemhud-search:focus {
+    box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.35);
+}
