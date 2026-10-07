@@ -10,10 +10,6 @@
 
 ![GNOME Shell](https://img.shields.io/badge/GNOME%20Shell-45%20|%2046%20|%2047%20|%2048%20|%2049%20|%2050%20|%2051-4A86CF)
 ![Platform](https://img.shields.io/badge/Platform-Linux-FCC624)
-![License](https://img.shields.io/badge/License-GPL--3.0-green)
-
-<br>
-
 <a href="https://extensions.gnome.org/extension/8183/system-hud/">
   <img src="https://img.shields.io/badge/Download-GNOME%20Extensions-4A86CF?style=for-the-badge">
 </a>
