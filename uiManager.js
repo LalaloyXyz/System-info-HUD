@@ -345,7 +345,7 @@ export class UIManager {
 
     _toggleMainScreenFromIndicator() {
         if (this._closingMainScreen)
-            return;
+            this.destroyMainScreen(false);
         if (this._indicator.menu.isOpen)
             this._indicator.menu.close();
 
@@ -677,7 +677,7 @@ export class UIManager {
         this._openingMainScreen = true;
         screen.opacity = 0;
         // Let Shell allocate the hidden card at its origin before making it visible.
-        this._openAnimationAllocationId = screen.connect('notify::allocation', () => {
+        const startAnimation = () => {
             screen.disconnect(this._openAnimationAllocationId);
             this._openAnimationAllocationId = 0;
             this._openAnimationLaterId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
@@ -689,8 +689,11 @@ export class UIManager {
                 });
                 return GLib.SOURCE_REMOVE;
             });
-        });
+        };
+        this._openAnimationAllocationId = screen.connect('notify::allocation', startAnimation);
         screen.show();
+        if (this._openAnimationAllocationId && screen.has_allocation())
+            startAnimation();
     }
 
     _animateMainScreen(screen, target, opening, onComplete) {
@@ -1777,7 +1780,7 @@ export class UIManager {
                     this._setIndicatorTextVisible(true, animate);
                 }
             };
-            if (animate) {
+            if (animate && screen.mapped && screen.opacity > 0) {
                 const target = this._getIndicatorAnimationTarget(screen);
                 screen.set_pivot_point(0.5, 0.5);
                 this._animateMainScreen(screen, { ...target, opacity: 0 }, false, finish);
