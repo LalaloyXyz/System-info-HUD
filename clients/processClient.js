@@ -3,8 +3,8 @@ import GLib from 'gi://GLib';
 import { ServiceClient } from './serviceClient.js';
 
 export class ProcessClient extends ServiceClient {
-    constructor() {
-        super();
+    constructor(worker) {
+        super(worker);
         const credentials = new Gio.Credentials();
         this._uid = credentials.get_unix_user();
         this._pid = credentials.get_unix_pid();

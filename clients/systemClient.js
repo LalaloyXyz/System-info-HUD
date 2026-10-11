@@ -8,7 +8,7 @@ export class SystemClient extends ServiceClient {
         } catch (error) {
             if (this._cancellable.is_cancelled())
                 throw error;
-            throw new Error('System HUD companion service unavailable. Install it as described in the extension README.');
+            throw new Error('System HUD bundled collector is unavailable. Check the Shell logs for the startup error.');
         }
     }
 

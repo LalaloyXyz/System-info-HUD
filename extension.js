@@ -1,5 +1,6 @@
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import { SystemClient } from './clients/systemClient.js';
+import { WorkerClient } from './clients/workerClient.js';
 import { UIManager } from './ui/uiManager.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
@@ -8,11 +9,13 @@ export default class SystemHUD extends Extension {
     constructor(metadata) {
         super(metadata);
         this._systemLink = null;
+        this._worker = null;
         this._uiManager = null;
     }
 
     enable() {
-        this._systemLink = new SystemClient();
+        this._worker = new WorkerClient(this.path);
+        this._systemLink = new SystemClient(this._worker);
         this._uiManager = new UIManager(this, this._systemLink);
         this._uiManager.createIndicator();
         const systemLink = this._systemLink;
@@ -31,5 +34,7 @@ export default class SystemHUD extends Extension {
             this._systemLink.destroy();
             this._systemLink = null;
         }
+        this._worker?.destroy();
+        this._worker = null;
     }
 }

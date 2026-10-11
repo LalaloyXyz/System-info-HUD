@@ -4,6 +4,14 @@ import GObject from 'gi://GObject';
 import { SystemLink } from './systemLink.js';
 import { ProcessModule } from './modules/processModule.js';
 
+let InputStream;
+try {
+    InputStream = imports.gi.GioUnix.InputStream;
+} catch (_) {
+    // GLib versions used by GNOME 45 expose this type through Gio.
+    InputStream = Gio.UnixInputStream;
+}
+
 const busName = 'io.github.LalaloyXyz.SystemHUD';
 const interfaceXml = `<node>
     <interface name="${busName}">
@@ -30,7 +38,19 @@ const CompanionApplication = GObject.registerClass(class CompanionApplication ex
         const registered = super.vfunc_dbus_register(connection, path);
         if (registered)
             registerService(connection);
+        if (registered)
+            print(connection.get_unique_name());
         return registered;
+    }
+
+    vfunc_startup() {
+        super.vfunc_startup();
+        this.hold();
+        const input = new InputStream({ fd: 0, close_fd: false });
+        input.read_bytes_async(1, GLib.PRIORITY_DEFAULT, null, (stream, result) => {
+            stream.read_bytes_finish(result);
+            this.quit();
+        });
     }
 
     vfunc_dbus_unregister(connection, path) {
@@ -44,8 +64,7 @@ const CompanionApplication = GObject.registerClass(class CompanionApplication ex
 
 const app = new CompanionApplication({
     application_id: busName,
-    flags: Gio.ApplicationFlags.IS_SERVICE,
-    inactivity_timeout: 15000,
+    flags: Gio.ApplicationFlags.NON_UNIQUE | Gio.ApplicationFlags.IS_SERVICE,
 });
 let system = null;
 let processes = null;

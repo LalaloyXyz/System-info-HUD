@@ -85,25 +85,23 @@ Designed to feel native to GNOME while remaining useful on a wide range of Linux
 - Linux
 - GNOME Shell 45, 46, 47, 48, 49, 50, or 51
 
-### Required companion service
+### One extension installation
 
-Install the **System HUD companion service** before enabling the extension:
+Install System HUD from GNOME Extensions. The extension package includes the
+GJS collector; no GitHub download, companion installation, or service installer
+is needed.
 
-```sh
-make -C companion install
-```
-
-It requires GJS and the Soup 3 introspection library (`gjs` and `libsoup3` on
-Fedora). This installs a separate application under `~/.local/libexec/system-hud`
-and its session D-Bus activation file. D-Bus starts it on demand; it exits after
-15 seconds without requests. To remove it, run `make -C companion uninstall`.
-Packagers can use `PREFIX=/usr` and `DESTDIR` with the same Makefile.
+The collector uses GJS and the Soup 3 introspection library (`gjs` and
+`libsoup3` on Fedora). Enabling the extension starts one collector process;
+disabling it closes the collector's input pipe so it cancels its work and exits.
+The collector also exits if GNOME Shell unexpectedly closes the pipe.
 
 The extension requests telemetry and process actions through
-`io.github.LalaloyXyz.SystemHUD`. All hardware collectors, command execution,
-public-IP requests, and process GPU scans run in this companion application.
-The extension does not launch commands or install the service automatically.
-The companion is required for statistics; optional hardware tools remain optional.
+`io.github.LalaloyXyz.SystemHUD` on the collector's unique session D-Bus
+connection. All hardware collectors, command execution, public-IP requests,
+and process GPU scans run outside GNOME Shell. No activation file is installed
+and an older standalone companion is not used. Optional hardware tools remain
+optional.
 
 ### Core tools
 
@@ -160,34 +158,37 @@ Project layout:
 ```text
 extension.js, prefs.js, metadata.json, stylesheet.css  GNOME entry files
 ui/                                                  HUD views, themes, graphs and helpers
-clients/                                             D-Bus clients for the companion
-companion/                                           Separate service and hardware collectors
+clients/                                             Collector lifecycle and D-Bus clients
+companion/                                           Bundled GJS collector and hardware modules
 assets/                                              Icons
 schemas/                                             GSettings source XML
 tests/                                               Regression and integration checks
 dist/                                                Generated packages (ignored by Git)
 ```
 
-Build both packages:
+Build the extension package:
 
 ```sh
 make pack
 ```
 
-The extension ZIP in `dist/` includes `ui/`, `clients/`, and `assets/`, and
-excludes the companion and tests. The separate companion archive includes its
-installer and license. Distribute it as a required dependency; do not add it to
-the EGO upload archive. Schema compilation is checked in `dist/schemas/`;
-generated binaries are not kept in the source tree. The ZIP includes the schema
-XML. After installing, compile the installed schemas as described in `AGENTS.md`.
+The extension ZIP in `dist/` includes `ui/`, `clients/`, `companion/`, and
+`assets/`; it excludes tests, installers, and generated binaries. Schema
+compilation is checked in `dist/schemas/`. The ZIP includes the schema XML.
+For manual local installation, compile the installed schemas as described in
+`AGENTS.md`.
 
-After installing the companion, run the live D-Bus checks in a private session:
+The bundled collector preserves the existing metrics with one installation.
+The EGO reviewer previously requested a separate application dependency;
+acceptance of this alternative still requires their review.
+
+Run the live D-Bus checks in a private session without installing a companion:
 
 ```sh
 GIO_USE_VFS=local dbus-run-session -- gjs -m tests/service.js
 ```
 
-This checks activation, telemetry, End Task safety, cancellation, idle shutdown,
+This checks startup, telemetry, End Task safety, cancellation, clean shutdown,
 and restart. Reload GNOME Shell and check both HUD pages and the OS marquee
 manually before submitting an update.
 

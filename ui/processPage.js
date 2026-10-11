@@ -8,8 +8,8 @@ import { ProcessClient } from '../clients/processClient.js';
 import { addButtonAnimation } from './buttonAnimation.js';
 
 export class ProcessPage {
-    constructor(processes = [], animationsEnabled = () => true) {
-        this._module = new ProcessClient();
+    constructor(processes = [], animationsEnabled = () => true, worker) {
+        this._module = new ProcessClient(worker);
         this._processes = processes;
         this._rows = new Map();
         this._appIcons = new Map();

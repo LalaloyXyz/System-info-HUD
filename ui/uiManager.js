@@ -573,7 +573,7 @@ export class UIManager {
         this._pageContainer.add_child(this._pageStack);
         this._statusPage = new St.BoxLayout({ x_expand: true, y_expand: true });
         this._pageStack.add_child(this._statusPage);
-        this._processPage = new ProcessPage(this._processSnapshot, () => this._useAnimation);
+        this._processPage = new ProcessPage(this._processSnapshot, () => this._useAnimation, this._systemLink._worker);
         this._processPage.actor.reactive = true;
         this._enableDrag(this._processPage.actor);
         this._pageStack.add_child(this._processPage.actor);
