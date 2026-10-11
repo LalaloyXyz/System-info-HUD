@@ -1,15 +1,15 @@
-import { verticalBox } from './modules/shellCompat.js';
+import { verticalBox } from './shellCompat.js';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Shell from 'gi://Shell';
-import { ProcessModule } from './modules/processModule.js';
-import { addButtonAnimation } from './modules/buttonAnimation.js';
+import { ProcessClient } from '../clients/processClient.js';
+import { addButtonAnimation } from './buttonAnimation.js';
 
 export class ProcessPage {
     constructor(processes = [], animationsEnabled = () => true) {
-        this._module = new ProcessModule();
+        this._module = new ProcessClient();
         this._processes = processes;
         this._rows = new Map();
         this._appIcons = new Map();

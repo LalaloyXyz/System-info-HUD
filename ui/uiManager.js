@@ -1,7 +1,7 @@
-import { verticalBox, horizontalBox } from './modules/shellCompat.js';
+import { verticalBox, horizontalBox } from './shellCompat.js';
 import St from 'gi://St';
 import { ProcessPage } from './processPage.js';
-import { addButtonAnimation } from './modules/buttonAnimation.js';
+import { addButtonAnimation } from './buttonAnimation.js';
 import Clutter from 'gi://Clutter';
 import Meta from 'gi://Meta';
 import GLib from 'gi://GLib';
@@ -62,6 +62,8 @@ export class UIManager {
         this._processSnapshot = [];
         this._osDetails = null;
         this._osHoverTimeoutId = null;
+        this._osMarqueeTimeoutId = 0;
+        this._stopOSMarquee = null;
         this._themeManager = new ThemeManager();
         this._themeChangeSignal = this._themeManager.connectThemeChanged(
             this._onThemeChanged.bind(this)
@@ -1337,25 +1339,36 @@ export class UIManager {
         osRow.add_child(viewport);
 
         const label = this._device_OS;
-        let timer = 0;
-        const stop = () => {
-            if (timer) {
-                GLib.source_remove(timer);
-                timer = 0;
+        let destroyed = false;
+        let generation = 0;
+        const removeTimer = () => {
+            if (this._osMarqueeTimeoutId) {
+                GLib.source_remove(this._osMarqueeTimeoutId);
+                this._osMarqueeTimeoutId = 0;
             }
+        };
+        const stop = () => {
+            generation++;
+            removeTimer();
             label.remove_all_transitions();
             label.translation_x = 0;
         };
         const restart = () => {
+            if (destroyed)
+                return;
             stop();
             if (!viewport.mapped || !this._useAnimation || this._closingMainScreen)
                 return;
             const overflow = label.get_preferred_width(-1)[1] - viewport.width;
             if (overflow <= 0)
                 return;
+            const currentGeneration = generation;
             const slide = toEnd => {
-                timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1200, () => {
-                    timer = 0;
+                if (destroyed || currentGeneration !== generation)
+                    return;
+                removeTimer();
+                this._osMarqueeTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1200, () => {
+                    this._osMarqueeTimeoutId = 0;
                     if (!viewport.mapped || !this._useAnimation || this._closingMainScreen)
                         return GLib.SOURCE_REMOVE;
                     label.ease({ translation_x: toEnd ? -overflow : 0,
@@ -1369,16 +1382,23 @@ export class UIManager {
             slide(true);
         };
         this._updateOSMarquee = restart;
+        const cleanup = () => {
+            if (destroyed)
+                return;
+            destroyed = true;
+            stop();
+            if (this._updateOSMarquee === restart)
+                this._updateOSMarquee = null;
+            if (this._stopOSMarquee === cleanup)
+                this._stopOSMarquee = null;
+        };
+        this._stopOSMarquee = cleanup;
         viewport.connect('notify::allocation', restart);
         viewport.connect('notify::mapped', restart);
         label.connect('notify::allocation', restart);
         label.connect('notify::text', restart);
         label.connect('style-changed', restart);
-        viewport.connect('destroy', () => {
-            stop();
-            if (this._updateOSMarquee === restart)
-                this._updateOSMarquee = null;
-        });
+        viewport.connect('destroy', cleanup);
 
         this._device_Kernel = new St.Label({
             text: 'Kernel : Loading...',
@@ -1733,6 +1753,7 @@ export class UIManager {
     destroyMainScreen(animate = this._useAnimation) {
         if (this._closingMainScreen && animate)
             return;
+        this._stopOSMarquee?.();
         this._openingMainScreen = false;
         if (this._mainScreenTimeline) {
             this._mainScreenTimeline.stop();

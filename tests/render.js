@@ -1,8 +1,8 @@
 // Requires the GNOME Shell and Mutter typelib/library directories in the environment.
 // Uses stand-in actors to check rendering logic, not actual on-screen rendering.
-import { updateGPUData, updateCPUData, updateMemoryData, updateStorageData, updatePowerData, updateNetworkData } from '../updateData.js';
-import { GPUModule } from '../modules/gpuModule.js';
-import { ProcessPage } from '../processPage.js';
+import { updateGPUData, updateCPUData, updateMemoryData, updateStorageData, updatePowerData, updateNetworkData } from '../ui/updateData.js';
+import { GPUModule } from '../companion/modules/gpuModule.js';
+import { ProcessPage } from '../ui/processPage.js';
 class Actor {
     constructor(props = {}) { Object.assign(this, props); this.children = []; this.parent = null; this.signals = new Map(); }
     add_child(actor) { if (this.destroyed || actor.destroyed) throw new Error('Disposed actor'); actor.parent = this; this.children.push(actor); }

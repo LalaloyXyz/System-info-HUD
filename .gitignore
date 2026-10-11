@@ -1,0 +1,7 @@
+/dist/
+/schemas/gschemas.compiled
+*.shell-extension.zip
+__pycache__/
+*.pyc
+*~
+*.swp

@@ -7,7 +7,7 @@ import vm from 'node:vm';
 const laters = new Map();
 let nextLaterId = 1;
 const removed = [];
-const source = readFileSync(new URL('../uiManager.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../ui/uiManager.js', import.meta.url), 'utf8');
 const UIManager = vm.runInNewContext(
     source.slice(source.indexOf('export class UIManager')).replace('export class', 'class') + '\nUIManager;', {
         Main: { layoutManager: { removeChrome: screen => removed.push(screen) } },
@@ -84,4 +84,45 @@ assert.equal(laters.size, 0, 'Unallocated card must wait for allocation');
 assert.equal(laters.size, 1);
 waiting.destroyMainScreen(false);
 assert.equal(laters.size, 0, 'Closing while waiting cancels the queued opening');
-console.log('PASS: HUD loading, closing, reopening, and allocation lifecycle checks');
+
+const timers = new Map();
+let nextTimer = 1;
+let animationComplete;
+const marqueeSignals = new Map();
+const marquee = { _useAnimation: true, _osMarqueeTimeoutId: 0, _device_OS: {
+    remove_all_transitions() {}, connect() {},
+    get_preferred_width: () => [0, 100],
+    ease: options => { animationComplete = options.onComplete; },
+} };
+const marqueeSource = source.slice(source.indexOf('        const label = this._device_OS;'),
+    source.indexOf('        this._device_Kernel = new St.Label'));
+vm.runInNewContext(`(function () { ${marqueeSource} }).call(marquee);`, {
+    marquee,
+    viewport: { mapped: true, width: 20, connect: (name, callback) => marqueeSignals.set(name, callback) },
+    Clutter: { AnimationMode: { LINEAR: 0 } },
+    GLib: {
+        PRIORITY_DEFAULT: 0, SOURCE_REMOVE: false,
+        timeout_add: (_priority, _delay, callback) => { const id = nextTimer++; timers.set(id, callback); return id; },
+        source_remove: id => timers.delete(id),
+    },
+});
+marquee._updateOSMarquee();
+const oldTimer = marquee._osMarqueeTimeoutId;
+marquee._updateOSMarquee();
+assert(!timers.has(oldTimer) && timers.size === 1, 'Restart removes the previous marquee timer');
+const tick = timers.get(marquee._osMarqueeTimeoutId);
+timers.delete(marquee._osMarqueeTimeoutId);
+tick();
+const staleCompletion = animationComplete;
+marquee._updateOSMarquee();
+staleCompletion();
+assert.equal(timers.size, 1, 'A replaced animation cannot schedule a second marquee timer');
+marqueeSignals.get('destroy')();
+assert.equal(timers.size, 0, 'Actor destruction immediately removes the marquee timer');
+staleCompletion();
+assert.equal(timers.size, 0, 'Animation completion after destruction cannot recreate the timer');
+const closedMarquee = manager(actor());
+closedMarquee._stopOSMarquee = () => { closedMarquee.marqueeStopped = true; };
+closedMarquee.destroyMainScreen(false);
+assert.equal(closedMarquee.marqueeStopped, true, 'HUD teardown explicitly stops the marquee');
+console.log('PASS: HUD loading, closing, reopening, allocation, and marquee lifecycle checks');

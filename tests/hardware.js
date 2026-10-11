@@ -1,12 +1,12 @@
 // Run with: gjs -m tests/hardware.js
 import GLib from 'gi://GLib';
-import { CPUModule } from '../modules/cpuModule.js';
-import { GPUModule } from '../modules/gpuModule.js';
-import { BaseModule } from '../modules/baseModule.js';
-import { StorageModule } from '../modules/storageModule.js';
-import { NetworkModule } from '../modules/networkModule.js';
-import { PowerModule } from '../modules/powerModule.js';
-import { ProcessModule } from '../modules/processModule.js';
+import { CPUModule } from '../companion/modules/cpuModule.js';
+import { GPUModule } from '../companion/modules/gpuModule.js';
+import { BaseModule } from '../companion/modules/baseModule.js';
+import { StorageModule } from '../companion/modules/storageModule.js';
+import { NetworkModule } from '../companion/modules/networkModule.js';
+import { PowerModule } from '../companion/modules/powerModule.js';
+import { ProcessModule } from '../companion/modules/processModule.js';
 
 let checks = 0;
 function assert(value, message) {

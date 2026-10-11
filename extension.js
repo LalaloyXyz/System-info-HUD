@@ -1,6 +1,7 @@
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
-import { SystemLink } from './systemLink.js';
-import { UIManager } from './uiManager.js';
+import { SystemClient } from './clients/systemClient.js';
+import { UIManager } from './ui/uiManager.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 
 export default class SystemHUD extends Extension {
@@ -11,9 +12,14 @@ export default class SystemHUD extends Extension {
     }
 
     enable() {
-        this._systemLink = new SystemLink();
+        this._systemLink = new SystemClient();
         this._uiManager = new UIManager(this, this._systemLink);
         this._uiManager.createIndicator();
+        const systemLink = this._systemLink;
+        systemLink.getUptime().catch(error => {
+            if (this._systemLink === systemLink)
+                Main.notify('System HUD', `${error.message}\n${this.metadata.url}`);
+        });
     }
 
     disable() {

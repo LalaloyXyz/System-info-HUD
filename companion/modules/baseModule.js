@@ -56,6 +56,13 @@ export class BaseModule {
         return names.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     }
 
+    _removeCommandTimeout(subprocess) {
+        const timeoutId = this._commands.get(subprocess);
+        if (timeoutId)
+            GLib.Source.remove(timeoutId);
+        this._commands.delete(subprocess);
+    }
+
     async _executeCommand(argv) {
         if (this._cancellable.is_cancelled())
             return '';
@@ -67,18 +74,15 @@ export class BaseModule {
             const subprocess = launcher.spawnv(argv);
 
             return await new Promise((resolve, reject) => {
-                let timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10000, () => {
-                    timeoutId = 0;
+                this._removeCommandTimeout(subprocess);
+                const timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10000, () => {
                     this._commands.set(subprocess, 0);
                     subprocess.force_exit();
                     return GLib.SOURCE_REMOVE;
                 });
                 this._commands.set(subprocess, timeoutId);
                 subprocess.communicate_utf8_async(null, this._cancellable, (proc, res) => {
-                    timeoutId = this._commands.get(proc);
-                    if (timeoutId)
-                        GLib.Source.remove(timeoutId);
-                    this._commands.delete(proc);
+                    this._removeCommandTimeout(proc);
                     try {
                         const [successful, stdout, stderr] = proc.communicate_utf8_finish(res);
                         if (!successful || !proc.get_successful()) {
@@ -123,9 +127,8 @@ export class BaseModule {
 
     destroy() {
         this._cancellable.cancel();
-        for (const [subprocess, timeoutId] of this._commands) {
-            if (timeoutId)
-                GLib.Source.remove(timeoutId);
+        for (const subprocess of this._commands.keys()) {
+            this._removeCommandTimeout(subprocess);
             subprocess.force_exit();
         }
         this._commands.clear();

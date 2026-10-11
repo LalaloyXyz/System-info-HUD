@@ -1,10 +1,12 @@
 import Gio from 'gi://Gio';
-import { getProcessGpuCommand } from './processGpu.js';
+import GLib from 'gi://GLib';
+import { collectProcessGpu } from './processGpu.js';
 
 export class ProcessModule {
     constructor() {
         this._cancellable = new Gio.Cancellable();
         this._subprocesses = new Set();
+        this._timeouts = new Map();
         const credentials = new Gio.Credentials();
         this._uid = credentials.get_unix_user();
         this._pid = credentials.get_unix_pid();
@@ -21,7 +23,16 @@ export class ProcessModule {
         this._subprocesses.add(proc);
         const pid = Number(proc.get_identifier());
         return new Promise((resolve, reject) => {
+            this._timeouts.set(proc, GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10000, () => {
+                this._timeouts.delete(proc);
+                proc.force_exit();
+                return GLib.SOURCE_REMOVE;
+            }));
             proc.communicate_utf8_async(null, this._cancellable, (subprocess, result) => {
+                const timeoutId = this._timeouts.get(subprocess);
+                if (timeoutId)
+                    GLib.Source.remove(timeoutId);
+                this._timeouts.delete(subprocess);
                 this._subprocesses.delete(subprocess);
                 try {
                     const [, stdout, stderr] = subprocess.communicate_utf8_finish(result);
@@ -50,8 +61,7 @@ export class ProcessModule {
         if (pid === null) {
             try {
                 const pids = processes.filter(process => process.uid === this._uid).map(process => String(process.pid));
-                const { stdout: gpuOutput } = await this._execute(getProcessGpuCommand(pids));
-                this._updateGpu(processes, JSON.parse(gpuOutput));
+                this._updateGpu(processes, await collectProcessGpu(pids, this._cancellable));
             } catch (error) {
                 if (this._cancellable.is_cancelled())
                     throw error;
@@ -101,6 +111,9 @@ export class ProcessModule {
     }
 
     async end(process) {
+        if (!process || !Number.isInteger(process.pid) || !Number.isInteger(process.uid) ||
+            typeof process.started !== 'string' || typeof process.name !== 'string')
+            throw new Error('Invalid process identity.');
         if (!this.canEnd(process))
             throw new Error('This process cannot be ended from the HUD.');
         const [current] = await this.list(process.pid);
@@ -112,6 +125,9 @@ export class ProcessModule {
 
     destroy() {
         this._cancellable.cancel();
+        for (const timeoutId of this._timeouts.values())
+            GLib.Source.remove(timeoutId);
+        this._timeouts.clear();
         for (const subprocess of this._subprocesses)
             subprocess.force_exit();
         this._subprocesses.clear();

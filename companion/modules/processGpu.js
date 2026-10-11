@@ -1,13 +1,8 @@
-// Run in a subprocess: walking procfs must not block the Shell UI thread.
+// Runs only in the companion service, outside the Shell UI thread.
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-export function getProcessGpuCommand(pids) {
-    const helper = GLib.filename_from_uri(import.meta.url)[0];
-    return ['gjs', '-m', helper, '--collect-process-gpu', ...pids];
-}
-
-async function collectProcessGpu(pids) {
+export async function collectProcessGpu(pids, cancellable) {
     Gio._promisify(Gio.File.prototype, 'enumerate_children_async', 'enumerate_children_finish');
     Gio._promisify(Gio.File.prototype, 'load_contents_async', 'load_contents_finish');
     Gio._promisify(Gio.FileEnumerator.prototype, 'next_files_async', 'next_files_finish');
@@ -16,20 +11,22 @@ async function collectProcessGpu(pids) {
     const decoder = new TextDecoder();
     const processes = {};
     for (const pid of pids) {
+        cancellable.set_error_if_cancelled();
         const clients = {};
         try {
             const directory = Gio.File.new_for_path(`/proc/${pid}/fd`);
             const entries = await directory.enumerate_children_async('standard::name,standard::symlink-target',
-                Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, GLib.PRIORITY_DEFAULT, null);
+                Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, GLib.PRIORITY_DEFAULT, cancellable);
             try {
                 while (true) {
-                    const [entry] = await entries.next_files_async(1, GLib.PRIORITY_DEFAULT, null);
+                    const [entry] = await entries.next_files_async(1, GLib.PRIORITY_DEFAULT, cancellable);
                     if (!entry)
                         break;
-                    if (!entry.get_symlink_target()?.startsWith('/dev/dri/'))
+                    if (!entry.has_attribute('standard::symlink-target') ||
+                        !entry.get_symlink_target()?.startsWith('/dev/dri/'))
                         continue;
                     try {
-                        const [bytes] = await Gio.File.new_for_path(`/proc/${pid}/fdinfo/${entry.get_name()}`).load_contents_async(null);
+                        const [bytes] = await Gio.File.new_for_path(`/proc/${pid}/fdinfo/${entry.get_name()}`).load_contents_async(cancellable);
                         const content = decoder.decode(bytes);
                         const id = content.match(/^drm-client-id:\s*(\d+)/m)?.[1];
                         if (!id)
@@ -55,9 +52,6 @@ async function collectProcessGpu(pids) {
         }
         processes[pid] = clients;
     }
+    cancellable.set_error_if_cancelled();
     return { time: GLib.get_monotonic_time() * 1000, processes };
 }
-
-// Importing the command builder in Shell must not run the collector.
-if (typeof ARGV !== 'undefined' && ARGV[0] === '--collect-process-gpu')
-    print(JSON.stringify(await collectProcessGpu(ARGV.slice(1))));

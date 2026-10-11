@@ -85,9 +85,29 @@ Designed to feel native to GNOME while remaining useful on a wide range of Linux
 - Linux
 - GNOME Shell 45, 46, 47, 48, 49, 50, or 51
 
+### Required companion service
+
+Install the **System HUD companion service** before enabling the extension:
+
+```sh
+make -C companion install
+```
+
+It requires GJS and the Soup 3 introspection library (`gjs` and `libsoup3` on
+Fedora). This installs a separate application under `~/.local/libexec/system-hud`
+and its session D-Bus activation file. D-Bus starts it on demand; it exits after
+15 seconds without requests. To remove it, run `make -C companion uninstall`.
+Packagers can use `PREFIX=/usr` and `DESTDIR` with the same Makefile.
+
+The extension requests telemetry and process actions through
+`io.github.LalaloyXyz.SystemHUD`. All hardware collectors, command execution,
+public-IP requests, and process GPU scans run in this companion application.
+The extension does not launch commands or install the service automatically.
+The companion is required for statistics; optional hardware tools remain optional.
+
 ### Core tools
 
-The extension reads system information from common Linux tools:
+The companion reads system information from common Linux tools:
 
 ```text
 lscpu  free  df  ip  upower  cat  uname  gnome-shell  lspci  ps  kill
@@ -135,13 +155,41 @@ Open the extension preferences to configure animations, refresh timing, HUD size
 
 ## 🤝 Contributing
 
-Build the upload archive with GNOME's packer rather than zipping the entire checkout:
+Project layout:
 
-```sh
-gnome-extensions pack --force --extra-source=assets --extra-source=modules --extra-source=systemLink.js --extra-source=themeManager.js --extra-source=uiManager.js --extra-source=updateData.js --extra-source=processPage.js .
+```text
+extension.js, prefs.js, metadata.json, stylesheet.css  GNOME entry files
+ui/                                                  HUD views, themes, graphs and helpers
+clients/                                             D-Bus clients for the companion
+companion/                                           Separate service and hardware collectors
+assets/                                              Icons
+schemas/                                             GSettings source XML
+tests/                                               Regression and integration checks
+dist/                                                Generated packages (ignored by Git)
 ```
 
-This includes the runtime modules and excludes the development-only `tests/` directory.
+Build both packages:
+
+```sh
+make pack
+```
+
+The extension ZIP in `dist/` includes `ui/`, `clients/`, and `assets/`, and
+excludes the companion and tests. The separate companion archive includes its
+installer and license. Distribute it as a required dependency; do not add it to
+the EGO upload archive. Schema compilation is checked in `dist/schemas/`;
+generated binaries are not kept in the source tree. The ZIP includes the schema
+XML. After installing, compile the installed schemas as described in `AGENTS.md`.
+
+After installing the companion, run the live D-Bus checks in a private session:
+
+```sh
+GIO_USE_VFS=local dbus-run-session -- gjs -m tests/service.js
+```
+
+This checks activation, telemetry, End Task safety, cancellation, idle shutdown,
+and restart. Reload GNOME Shell and check both HUD pages and the OS marquee
+manually before submitting an update.
 
 Contributions, bug reports, and feature requests are welcome.
 

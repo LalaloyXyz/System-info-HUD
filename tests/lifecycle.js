@@ -4,9 +4,9 @@
 
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
-import { BaseModule } from '../modules/baseModule.js';
-import { ProcessModule } from '../modules/processModule.js';
-import { NetworkModule } from '../modules/networkModule.js';
+import { BaseModule } from '../companion/modules/baseModule.js';
+import { ProcessModule } from '../companion/modules/processModule.js';
+import { NetworkModule } from '../companion/modules/networkModule.js';
 
 let checks = 0;
 function assert(value, message) {
@@ -42,7 +42,9 @@ assert(await pendingRead === '', 'Pending file read is cancelled');
 const processes = new ProcessModule();
 const pendingProcess = processes._execute(['sleep', '30']).catch(error => error);
 const [child] = processes._subprocesses;
+const processTimer = processes._timeouts.get(child);
 processes.destroy();
+assert(!GLib.MainContext.default().find_source_by_id(processTimer), 'Process destroy removes its command timeout');
 assert((await pendingProcess).matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED),
     'Process command rejects on cancellation');
 await waitForExit(child);
@@ -59,4 +61,12 @@ const network = new NetworkModule();
 network.destroy();
 network._ensurePublicIPRefresh();
 assert(network._session === null && !network._publicIPInFlight, 'Destroyed network collector cannot restart its request');
+
+const completed = new BaseModule();
+const command = completed._executeCommand(['sleep', '0.01']);
+const [[, completedTimer]] = completed._commands;
+await command;
+assert(!GLib.MainContext.default().find_source_by_id(completedTimer), 'Completed commands remove their timeout');
+assert(completed._commands.size === 0, 'Completed commands leave no tracked resources');
+completed.destroy();
 print(`PASS: ${checks} lifecycle regression checks`);

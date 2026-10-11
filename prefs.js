@@ -3,7 +3,7 @@ import Gio from 'gi://Gio';
 import Gdk from 'gi://Gdk';
 import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
-import { getCpuCoreColor } from './modules/coreColors.js';
+import { getCpuCoreColor } from './ui/coreColors.js';
 
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 

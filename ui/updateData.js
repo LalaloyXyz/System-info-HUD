@@ -1,9 +1,9 @@
-import { verticalBox, horizontalBox } from './modules/shellCompat.js';
+import { verticalBox, horizontalBox } from './shellCompat.js';
 
 import Clutter from 'gi://Clutter';
 import Cairo from 'cairo';
 import GLib from 'gi://GLib';
-import { getCpuCoreColor } from './modules/coreColors.js';
+import { getCpuCoreColor } from './coreColors.js';
 
 const DETAIL_LABEL_STYLE = 'font-weight: 500; font-size: 11px;';
 const HELP_LABEL_STYLE = 'font-weight: 500; font-size: 11px;';
