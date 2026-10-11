@@ -1,5 +1,6 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import '../companion/worker.js';
 
 export class WorkerClient {
     constructor(extensionPath) {
@@ -8,9 +9,13 @@ export class WorkerClient {
         this._stopping = false;
         // One bundled GJS process handles all collection outside GNOME Shell.
         // Closing its stdin on disable also lets it detect an unexpected parent exit.
-        this._process = Gio.Subprocess.new([
-            'gjs', '-m', GLib.build_filenamev([extensionPath, 'companion', 'service.js']),
-        ], Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE);
+        const launcher = new Gio.SubprocessLauncher({
+            flags: Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE,
+        });
+        launcher.setenv('SYSTEMHUD_WORKER', '1', true);
+        this._process = launcher.spawnv([
+            'gjs', '-m', GLib.build_filenamev([extensionPath, 'companion', 'worker.js']),
+        ]);
         this._stdout = new Gio.DataInputStream({ base_stream: this._process.get_stdout_pipe() });
         this.ready = new Promise((resolve, reject) => {
             this._startupTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10000, () => {
