@@ -629,7 +629,7 @@ export class UIManager {
             this._createLeftColumn(leftColumn, contentHeight),
             this._createRightColumn(rightColumn, contentHeight),
         ]);
-        if (!await this._prepareInitialData(screen))
+        if (this._main_screen !== screen || this._closingMainScreen)
             return;
 
         const x = Math.floor((monitor.width - popupWidth) / 2) + monitor.x;
@@ -646,17 +646,6 @@ export class UIManager {
 
         this._setIndicatorTextVisible(false);
         this._restartUpdateLoop();
-    }
-
-    async _prepareInitialData(screen) {
-        if (this._main_screen !== screen || this._closingMainScreen)
-            return false;
-        const sections = ['device', 'network', 'memory', 'os', 'storage', 'power', 'cpu', 'gpu'];
-        const missing = sections.filter(section => this._displayCache[section] === undefined);
-        await Promise.allSettled(missing.map(section => this._runSectionUpdate(section).then(() => {
-            this._markSectionRefreshed(section, Date.now());
-        })));
-        return this._main_screen === screen && !this._closingMainScreen;
     }
 
     _getIndicatorAnimationTarget(screen) {

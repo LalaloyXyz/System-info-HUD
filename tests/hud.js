@@ -7,10 +7,36 @@ import vm from 'node:vm';
 const laters = new Map();
 let nextLaterId = 1;
 const removed = [];
+class Layout {
+    constructor(properties = {}) { Object.assign(this, properties); }
+    add_child() {}
+    connect() { return 1; }
+    disconnect() {}
+    set_size() {}
+    set_width() {}
+    set_height() {}
+    set_position() {}
+    grab_key_focus() {}
+    show() { this.visible = true; }
+    remove_all_transitions() {}
+    destroy() {}
+}
 const source = readFileSync(new URL('../ui/uiManager.js', import.meta.url), 'utf8');
 const UIManager = vm.runInNewContext(
     source.slice(source.indexOf('export class UIManager')).replace('export class', 'class') + '\nUIManager;', {
-        Main: { layoutManager: { removeChrome: screen => removed.push(screen) } },
+        Main: { layoutManager: {
+            removeChrome: screen => removed.push(screen), addChrome() {},
+            primaryMonitor: { x: 0, y: 0, width: 1920, height: 1080 },
+        } },
+        St: { BoxLayout: Layout, Widget: Layout, Button: Layout },
+        Clutter: { ActorAlign: { CENTER: 0 }, BinLayout: class {} },
+        verticalBox: {},
+        addButtonAnimation() {},
+        ProcessPage: class {
+            constructor() { this.actor = new Layout(); }
+            getSnapshot() { return []; }
+            destroy() {}
+        },
         Meta: { LaterType: { BEFORE_REDRAW: 0 } },
         GLib: { SOURCE_REMOVE: false },
         global: { compositor: { get_laters: () => ({
@@ -85,6 +111,43 @@ assert.equal(laters.size, 1);
 waiting.destroyMainScreen(false);
 assert.equal(laters.size, 0, 'Closing while waiting cancels the queued opening');
 
+function coldManager() {
+    const hud = manager(null);
+    Object.assign(hud, {
+        _useAnimation: false, _popupWidthPercent: 42, _popupHeightPercent: 42,
+        _systemLink: { _worker: {} }, _displayCache: {}, _nextRefreshAt: {}, _refreshIntervals: {},
+        _updateThemeColors: () => ({}), _createHeaderButtons() {}, _enableDrag() {},
+        _stylePageButtons() {}, _switchPage() {},
+        _createLeftColumn: async () => {}, _createRightColumn: async () => {},
+        _restartUpdateLoop() { this.loopStarted = true; },
+    });
+    return hud;
+}
+
+const slow = coldManager();
+let requests = 0;
+slow._runSectionUpdate = () => { requests++; return new Promise(() => {}); };
+let opened = false;
+slow.showMainScreen().then(() => { opened = true; });
+await new Promise(setImmediate);
+assert.equal(opened, true, 'A stalled collector must not block the initial open');
+assert.equal(slow._main_screen.visible, true, 'The HUD must be visible before telemetry arrives');
+assert.equal(slow.loopStarted, true, 'Opening must start the regular telemetry update loop');
+slow._updateAllInfo();
+assert.equal(requests, 8, 'All telemetry sections still load through the update loop');
+slow.destroyMainScreen(false);
+
+const abandoned = coldManager();
+let finishColumns;
+abandoned._createLeftColumn = () => new Promise(resolve => { finishColumns = resolve; });
+const abandonedOpen = abandoned.showMainScreen();
+const abandonedScreen = abandoned._main_screen;
+abandoned.destroyMainScreen(false);
+finishColumns();
+await abandonedOpen;
+assert.equal(abandonedScreen.visible, false, 'Closing during construction must not show a destroyed card');
+assert.equal(abandoned.loopStarted, undefined, 'Closing during construction must not restart updates');
+
 const timers = new Map();
 let nextTimer = 1;
 let animationComplete;
@@ -125,4 +188,4 @@ const closedMarquee = manager(actor());
 closedMarquee._stopOSMarquee = () => { closedMarquee.marqueeStopped = true; };
 closedMarquee.destroyMainScreen(false);
 assert.equal(closedMarquee.marqueeStopped, true, 'HUD teardown explicitly stops the marquee');
-console.log('PASS: HUD loading, closing, reopening, allocation, and marquee lifecycle checks');
+console.log('PASS: HUD nonblocking opening, closing, reopening, allocation, and marquee lifecycle checks');
