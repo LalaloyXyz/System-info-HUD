@@ -1,8 +1,8 @@
 {
   "uuid": "systemHUD@LalaloyXyz",
   "name": "System HUD",
-  "description": "Clean UI system monitor for CPU, GPU, memory, storage, network, power. Includes a GJS collector that runs outside GNOME Shell; no separate companion installation is required. The Copy button writes system information to the clipboard.",
-  "version": 30,
+  "description": "Clean UI system monitor for CPU, GPU, memory, storage, network, power.",
+  "version": 31,
   "shell-version": [
     "45", "46", "47", "48", "49", "50", "51"
   ],
