@@ -4,6 +4,11 @@ import GObject from 'gi://GObject';
 import { SystemLink } from './systemLink.js';
 import { ProcessModule } from './modules/processModule.js';
 
+// GioUnix was split from Gio in GLib 2.80; GNOME 45 uses the older namespace.
+const InputStream = GLib.check_version(2, 80, 0) === null
+    ? (await import('gi://GioUnix?version=2.0')).default.InputStream
+    : Gio.UnixInputStream;
+
 const busName = 'io.github.LalaloyXyz.SystemHUD';
 const interfaceXml = `<node>
     <interface name="${busName}">
@@ -26,14 +31,6 @@ const interfaceXml = `<node>
 </node>`;
 
 export function runService() {
-    let InputStream;
-    try {
-        InputStream = imports.gi.GioUnix.InputStream;
-    } catch (_) {
-        // GLib versions used by GNOME 45 expose this type through Gio.
-        InputStream = Gio.UnixInputStream;
-    }
-
     let system = null;
     let processes = null;
     let exported = null;
@@ -110,5 +107,5 @@ export function runService() {
         exported.export(connection, '/io/github/LalaloyXyz/SystemHUD');
     }
 
-    app.run([]);
+    return app.runAsync([]);
 }

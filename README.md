@@ -159,7 +159,7 @@ Project layout:
 extension.js, prefs.js, metadata.json, stylesheet.css  GNOME entry files
 ui/                                                  HUD views, themes, graphs and helpers
 clients/                                             Collector lifecycle and D-Bus clients
-companion/                                           Bundled GJS collector and hardware modules
+app/                                           Bundled GJS collector and hardware modules
 assets/                                              Icons
 schemas/                                             GSettings source XML
 tests/                                               Regression and integration checks
@@ -172,11 +172,26 @@ Build the extension package:
 make pack
 ```
 
-The extension ZIP in `dist/` includes `ui/`, `clients/`, `companion/`, and
+The extension ZIP in `dist/` includes `ui/`, `clients/`, `app/`, and
 `assets/`; it excludes tests, installers, and generated binaries. Schema
 compilation is checked in `dist/schemas/`. The ZIP includes the schema XML.
-For manual local installation, compile the installed schemas as described in
-`AGENTS.md`.
+
+Install the ZIP with GNOME's installer so it compiles the settings schema:
+
+```sh
+gnome-extensions install --force dist/systemHUD@LalaloyXyz.shell-extension.zip
+```
+
+If you extract the ZIP or copy the files into the extension directory yourself,
+compile the schema before enabling the extension or opening its preferences:
+
+```sh
+glib-compile-schemas --strict "$HOME/.local/share/gnome-shell/extensions/systemHUD@LalaloyXyz/schemas"
+gnome-extensions prefs systemHUD@LalaloyXyz
+```
+
+This fixes a missing `schemas/gschemas.compiled` error after a manual copy.
+Log out and back in if the extension itself has not loaded yet.
 
 The bundled collector preserves the existing metrics with one installation.
 The EGO reviewer previously requested a separate application dependency;

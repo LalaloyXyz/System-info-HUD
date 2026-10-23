@@ -667,7 +667,13 @@ function addCPUTemperatureGraph(coreBox, coreDetails, temperatureHistory, themeC
 }
 
 function setCPURows(coreBox, cpuInfo, themeColors, St, showGraph = true, cpuCoreColors = []) {
-    const cachedGraphs = cpuGraphActors.get(coreBox);
+    let cachedGraphs = cpuGraphActors.get(coreBox);
+    if (cachedGraphs && !showGraph) {
+        for (const graph of cachedGraphs)
+            graph.destroy();
+        cpuGraphActors.delete(coreBox);
+        cachedGraphs = null;
+    }
     if (cachedGraphs) {
         for (const graph of cachedGraphs)
             if (graph.get_parent() === coreBox)
@@ -837,7 +843,6 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpu
     const { textColor } = sectionTextColors(themeColors);
     const titleStyle = `color: ${textColor}; font-weight: 600; font-size: 12px;`;
     const entries = gpuInfo.split(/\n\s*\n/).map(entry => entry.trim()).filter(Boolean);
-    const activeGraphs = new Set();
 
     for (const [gpuIndex, entry] of entries.entries()) {
         const history = gpuHistories[gpuIndex] ?? { memory: gpuMemoryHistory, temperature: gpuTemperatureHistory, load: gpuLoadHistory };
@@ -852,8 +857,6 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpu
         }));
 
         const graphId = entry.match(/^Device:\s*(.+)$/m)?.[1] ?? gpuIndex;
-        for (const metric of ['load', 'memory', 'temperature'])
-            activeGraphs.add(`${metric}-${graphId}`);
         const body = lines.slice(1).join(' ');
         const vram = body.match(/VRAM:\s*([\d.]+MB)\s*\/\s*([\d.]+MB)\s*\|\s*([\d.]+)%/);
         const videoMemory = body.match(/Memory Usage:\s*([\d.]+\s*MB)\s*\/\s*([\d.]+\s*GB)\s*\|\s*([\d.]+)%/);
@@ -926,7 +929,7 @@ function setGPURows(gpuBox, gpuInfo, themeColors, St, gpuMemoryHistory = [], gpu
     }
     if (cachedGraphs) {
         for (const [key, graph] of cachedGraphs) {
-            if (!activeGraphs.has(key)) {
+            if (graph.get_parent() !== gpuBox) {
                 graph.destroy();
                 cachedGraphs.delete(key);
             }

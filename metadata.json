@@ -1,8 +1,8 @@
 {
   "uuid": "systemHUD@LalaloyXyz",
   "name": "System HUD",
-  "description": "Clean UI system monitor for CPU, GPU, memory, storage, network, power.",
-  "version": 31,
+  "description": "Clean UI system monitor for CPU, GPU, memory, storage, network, power.\n\nThe Copy button writes system information to the clipboard. Public IP lookup uses api.ipify.org.",
+  "version": 32,
   "shell-version": [
     "45", "46", "47", "48", "49", "50", "51"
   ],

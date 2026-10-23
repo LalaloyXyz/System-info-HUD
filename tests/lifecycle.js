@@ -4,9 +4,9 @@
 
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
-import { BaseModule } from '../companion/modules/baseModule.js';
-import { ProcessModule } from '../companion/modules/processModule.js';
-import { NetworkModule } from '../companion/modules/networkModule.js';
+import { BaseModule } from '../app/modules/baseModule.js';
+import { ProcessModule } from '../app/modules/processModule.js';
+import { NetworkModule } from '../app/modules/networkModule.js';
 
 let checks = 0;
 function assert(value, message) {

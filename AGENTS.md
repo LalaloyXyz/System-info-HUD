@@ -2,14 +2,14 @@
 
 ## Project Structure & Module Organization
 
-This repository contains a GNOME Shell extension and its bundled GJS collector. Keep GNOME's entry files (`extension.js`, `prefs.js`, `metadata.json`, and `stylesheet.css`) at the root. HUD views, themes, graphs, and presentation helpers live in `ui/`. Collector lifecycle and D-Bus clients live in `clients/`. Hardware collectors and all telemetry command execution live in `companion/modules/`, with the bundled D-Bus worker in `companion/`. Keep icons in `assets/`, GSettings source XML in `schemas/`, tests in `tests/`, and generated packages in the ignored `dist/` directory.
+This repository contains a GNOME Shell extension and its bundled GJS collector. Keep GNOME's entry files (`extension.js`, `prefs.js`, `metadata.json`, and `stylesheet.css`) at the root. HUD views, themes, graphs, and presentation helpers live in `ui/`. Collector lifecycle and D-Bus clients live in `clients/`. Hardware collectors and all telemetry command execution live in `app/modules/`, with the bundled D-Bus worker in `app/`. Keep icons in `assets/`, GSettings source XML in `schemas/`, tests in `tests/`, and generated packages in the ignored `dist/` directory.
 
 ## Build, Test, and Development Commands
 
 Use the Makefiles and GNOME tooling to validate and package changes:
 
 - `glib-compile-schemas schemas/` compiles settings after schema edits. Do not commit the generated `schemas/gschemas.compiled` file.
-- `make pack` creates one extension ZIP under `dist/`. It includes `assets/`, `ui/`, `clients/`, and `companion/`; it excludes tests and installers. No separate companion installation is needed.
+- `make pack` creates one extension ZIP under `dist/`. It includes `assets/`, `ui/`, `clients/`, and `app/`; it excludes tests and installers. No separate companion installation is needed.
 - `gnome-extensions install --force dist/systemHUD@LalaloyXyz.shell-extension.zip` installs the extension archive locally.
 - After installing or updating, run `glib-compile-schemas ~/.local/share/gnome-shell/extensions/systemHUD@LalaloyXyz/schemas/` so the installed compiled schema includes newly added keys.
 - `gnome-extensions enable systemHUD@LalaloyXyz` enables it for the current user.

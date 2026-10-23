@@ -23,36 +23,7 @@ function getCpuCoreCount() {
 
 export default class SystemHUDPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
-        let settings;
-
-        try {
-            settings = this.getSettings();
-        } catch (error) {
-            const page = new Adw.PreferencesPage({
-                title: _('General'),
-                icon_name: 'preferences-system-symbolic',
-            });
-            window.add(page);
-
-            const group = new Adw.PreferencesGroup({
-                title: _('Settings unavailable'),
-                description: _('The compiled GSettings schema for System HUD is missing, so preferences cannot be loaded yet.'),
-            });
-            page.add(group);
-
-            group.add(new Adw.ActionRow({
-                title: _('Missing file'),
-                subtitle: _('schemas/gschemas.compiled'),
-            }));
-
-            group.add(new Adw.ActionRow({
-                title: _('How to fix it'),
-                subtitle: _('Run `glib-compile-schemas schemas/` in the extension folder, then reinstall or copy the updated files.'),
-            }));
-
-            logError(error, 'System HUD: failed to load preferences schema');
-            return;
-        }
+        const settings = this.getSettings();
 
         const page = new Adw.PreferencesPage({
             title: _('General'),

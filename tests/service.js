@@ -116,6 +116,7 @@ assert((await pending).matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED),
 assert(await owner(destination), 'Closing clients leaves the shared collector running');
 worker.destroy();
 assert(worker._startupTimeout === 0, 'Disable removes sources immediately');
+assert(worker._process === null && worker._stdout === null, 'Disable releases worker references immediately');
 await new Promise(resolve => childWorker.wait_async(null, (proc, result) => {
     proc.wait_finish(result);
     resolve();

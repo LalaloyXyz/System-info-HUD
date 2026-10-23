@@ -312,7 +312,12 @@ export class UIManager {
 
         // GNOME 49+ St.Button uses ClutterClickGesture internally, which can
         // consume press/release events before extension handlers see them.
-        this._indicator.clear_actions();
+        if (typeof Clutter.ClickGesture === 'function') {
+            for (const action of this._indicator.get_actions()) {
+                if (action instanceof Clutter.ClickGesture)
+                    this._indicator.remove_action(action);
+            }
+        }
 
         this._indicatorClickSignalId = this._indicator.connect('button-press-event', (_actor, event) => {
             if (event.get_button() !== 1)
@@ -376,7 +381,6 @@ export class UIManager {
             this._profileBin.style =  `
                 background-image: url("file://${this._profileImagePath}");
                 background-size: cover;
-                background-position: center;
                 border-radius: 360px;
                 border: 2px solid ${themeColors.accent};
             `;
@@ -439,7 +443,8 @@ export class UIManager {
                 gpuHead: this._gpuHead,
                 gpuBox: this._gpuBox
             }, themeColors, St);
-            this._updateGPUInfo();
+            if (this._displayCache.gpu !== undefined)
+                this._updateGPUInfo(this._displayCache.gpu);
             if (this._processPage)
                 this._stylePageButtons();
         }
@@ -478,47 +483,128 @@ export class UIManager {
     }
 
     _enableDrag(actor) {
-        let dragging = false;
+        let screen = null;
         let dragStartX = 0;
         let dragStartY = 0;
         let actorStartX = 0;
         let actorStartY = 0;
+        let dragPose = null;
+        let dragX = 0;
+        let dragY = 0;
+        let redrawId = 0;
+        let animateDrag = false;
+        const animationsEnabled = () => this._useAnimation && St.Settings.get().enable_animations;
+        const stopTransitions = () => {
+            for (const property of ['translation-x', 'translation-y', 'scale-x', 'scale-y'])
+                screen.remove_transition(property);
+        };
+        const cancelMotion = () => {
+            if (redrawId) {
+                global.compositor.get_laters().remove(redrawId);
+                redrawId = 0;
+            }
+        };
+        const applyMotion = () => {
+            screen.translation_x = dragX;
+            screen.translation_y = dragY;
+            if (!animateDrag)
+                return;
+            if (!dragPose) {
+                dragPose = { scaleX: screen.scale_x, scaleY: screen.scale_y };
+                stopTransitions();
+            }
+            const pullX = Math.tanh(dragX / 90);
+            const pullY = Math.tanh(dragY / 80);
+            screen.set_scale(
+                Math.max(0.96, Math.min(1.025, dragPose.scaleX + Math.abs(pullX) * 0.025 - Math.abs(pullY) * 0.010)),
+                Math.max(0.94, Math.min(1.015, dragPose.scaleY + Math.abs(pullY) * 0.035 - Math.abs(pullX) * 0.008)));
+        };
+        const finishDrag = () => {
+            cancelMotion();
+            const draggedScreen = screen;
+            screen = null;
+            dragPose = null;
+            if (!draggedScreen || draggedScreen !== this._main_screen || this._closingMainScreen)
+                return;
+            draggedScreen.set_position(actorStartX + dragX, actorStartY + dragY);
+            draggedScreen.translation_x = 0;
+            draggedScreen.translation_y = 0;
+            if (animationsEnabled()) {
+                draggedScreen.ease({
+                    scale_x: 1, scale_y: 1, translation_x: 0, translation_y: 0,
+                    duration: Math.round(600 * St.Settings.get().slow_down_factor),
+                    mode: Clutter.AnimationMode.EASE_OUT_ELASTIC,
+                });
+            } else {
+                draggedScreen.remove_all_transitions();
+                draggedScreen.set_scale(1, 1);
+                draggedScreen.translation_x = 0;
+                draggedScreen.translation_y = 0;
+            }
+        };
 
         actor.connect('button-press-event', (actor, event) => {
-            if (event.get_button() !== 1)
+            if (event.get_button() !== 1 || !this._main_screen || this._openingMainScreen || this._closingMainScreen)
                 return Clutter.EVENT_PROPAGATE;
             const eventActor = event.get_source() ?? actor.get_stage()?.get_event_actor?.(event);
             for (let source = eventActor; source && source !== actor; source = source.get_parent()) {
                 if (source instanceof St.Button || source instanceof St.Entry || source instanceof St.ScrollBar)
                     return Clutter.EVENT_PROPAGATE;
             }
-            dragging = true;
+            screen = this._main_screen;
             const [x, y] = event.get_coords();
             dragStartX = x;
             dragStartY = y;
-
-            [actorStartX, actorStartY] = this._main_screen.get_position();
+            dragPose = null;
+            dragX = 0;
+            dragY = 0;
+            cancelMotion();
+            animateDrag = animationsEnabled();
+            [actorStartX, actorStartY] = screen.get_position();
+            if (animateDrag) {
+                screen.set_pivot_point(0.5, 0.5);
+                stopTransitions();
+                screen.ease({
+                    scale_x: 0.985, scale_y: 0.97, translation_x: 0, translation_y: 0,
+                    duration: Math.round(110 * St.Settings.get().slow_down_factor),
+                    mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                });
+            }
             return Clutter.EVENT_STOP;
         });
 
         actor.connect('motion-event', (actor, event) => {
-            if (!dragging) return Clutter.EVENT_PROPAGATE;
-            if (!(event.get_state() & Clutter.ModifierType.BUTTON1_MASK)) {
-                dragging = false;
+            if (!screen)
+                return Clutter.EVENT_PROPAGATE;
+            if (!(event.get_state() & Clutter.ModifierType.BUTTON1_MASK) ||
+                screen !== this._main_screen || this._closingMainScreen) {
+                finishDrag();
                 return Clutter.EVENT_PROPAGATE;
             }
             const [x, y] = event.get_coords();
-            const dx = x - dragStartX;
-            const dy = y - dragStartY;
-            this._main_screen.set_position(actorStartX + dx, actorStartY + dy);
+            dragX = x - dragStartX;
+            dragY = y - dragStartY;
+            if (!redrawId) {
+                redrawId = global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+                    redrawId = 0;
+                    if (screen && screen === this._main_screen && !this._closingMainScreen)
+                        applyMotion();
+                    return GLib.SOURCE_REMOVE;
+                });
+            }
             return Clutter.EVENT_STOP;
         });
 
-        actor.connect('button-release-event', () => {
-            if (!dragging)
-                return Clutter.EVENT_PROPAGATE;
+        actor.connect('destroy', () => {
+            cancelMotion();
+            screen = null;
+            dragPose = null;
+        });
 
-            dragging = false;
+        actor.connect('button-release-event', () => {
+            if (!screen)
+                return Clutter.EVENT_PROPAGATE;
+            finishDrag();
             return Clutter.EVENT_STOP;
         });
     }
@@ -1064,7 +1150,9 @@ export class UIManager {
         const gpuText = typeof info.gpu === 'string' && info.gpu.trim()
             ? info.gpu.split('\n').map(line => `  ${line}`).join('\n')
             : '  N/A';
-        const networkSpeed = network.networkSpeed || 'N/A';
+        const networkSpeed = network.networkSpeed
+            ? `Download: ${network.networkSpeed.download}, Upload: ${network.networkSpeed.upload}`
+            : 'N/A';
 
         const text = [
             'SYSTEM',
@@ -1149,7 +1237,6 @@ export class UIManager {
             style: `
                 background-image: url("file://${this._profileImagePath}");
                 background-size: cover;
-                background-position: center;
                 border-radius: 360px;
                 border: 2px solid ${themeColors.accent};
             `,
@@ -1328,7 +1415,6 @@ export class UIManager {
         osRow.add_child(viewport);
 
         const label = this._device_OS;
-        let destroyed = false;
         let generation = 0;
         const removeTimer = () => {
             if (this._osMarqueeTimeoutId) {
@@ -1343,8 +1429,6 @@ export class UIManager {
             label.translation_x = 0;
         };
         const restart = () => {
-            if (destroyed)
-                return;
             stop();
             if (!viewport.mapped || !this._useAnimation || this._closingMainScreen)
                 return;
@@ -1353,7 +1437,7 @@ export class UIManager {
                 return;
             const currentGeneration = generation;
             const slide = toEnd => {
-                if (destroyed || currentGeneration !== generation)
+                if (currentGeneration !== generation)
                     return;
                 removeTimer();
                 this._osMarqueeTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1200, () => {
@@ -1372,22 +1456,24 @@ export class UIManager {
         };
         this._updateOSMarquee = restart;
         const cleanup = () => {
-            if (destroyed)
-                return;
-            destroyed = true;
             stop();
+            for (const [actor, id] of signals)
+                actor.disconnect(id);
+            signals.length = 0;
             if (this._updateOSMarquee === restart)
                 this._updateOSMarquee = null;
             if (this._stopOSMarquee === cleanup)
                 this._stopOSMarquee = null;
         };
         this._stopOSMarquee = cleanup;
-        viewport.connect('notify::allocation', restart);
-        viewport.connect('notify::mapped', restart);
-        label.connect('notify::allocation', restart);
-        label.connect('notify::text', restart);
-        label.connect('style-changed', restart);
-        viewport.connect('destroy', cleanup);
+        const signals = [
+            [viewport, viewport.connect('notify::allocation', restart)],
+            [viewport, viewport.connect('notify::mapped', restart)],
+            [label, label.connect('notify::allocation', restart)],
+            [label, label.connect('notify::text', restart)],
+            [label, label.connect('style-changed', restart)],
+            [viewport, viewport.connect('destroy', cleanup)],
+        ];
 
         this._device_Kernel = new St.Label({
             text: 'Kernel : Loading...',
@@ -1783,6 +1869,7 @@ export class UIManager {
             screen.remove_all_transitions();
             const finish = () => {
                 Main.layoutManager.removeChrome(screen);
+                // Actor destruction cascades to the OS viewport and attached CPU/GPU graphs.
                 screen.destroy();
                 if (this._main_screen === screen) {
                     this._main_screen = null;

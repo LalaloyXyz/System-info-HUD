@@ -1,7 +1,7 @@
 // Requires the GNOME Shell and Mutter typelib/library directories in the environment.
 // Uses stand-in actors to check rendering logic, not actual on-screen rendering.
 import { updateGPUData, updateCPUData, updateMemoryData, updateStorageData, updatePowerData, updateNetworkData } from '../ui/updateData.js';
-import { GPUModule } from '../companion/modules/gpuModule.js';
+import { GPUModule } from '../app/modules/gpuModule.js';
 import { ProcessPage } from '../ui/processPage.js';
 class Actor {
     constructor(props = {}) { Object.assign(this, props); this.children = []; this.parent = null; this.signals = new Map(); }
@@ -38,6 +38,32 @@ updateGPUData({ gpuBox: box, animationsEnabled: false, gpuHistories: [
 const remaining = box.children.filter(child => child instanceof St.DrawingArea);
 assert(remaining[0] === graphs[2] && remaining[1] === graphs[3], 'Keep surviving GPU graph by PCI address after card removal');
 assert(graphs[0].destroyed && graphs[1].destroyed, 'Release removed GPU graphs');
+updateGPUData({ gpuBox: box, showGraph: false, animationsEnabled: false }, gpu._formatGpuInfo(b, 0), colors, St);
+assert(remaining.every(graph => graph.destroyed), 'Turning GPU graphs off destroys the detached cached actors');
+updateGPUData({ gpuBox: box, animationsEnabled: false, gpuHistories: [
+    { memory: [], temperature: [81], load: [91] }
+] }, gpu._formatGpuInfo(b, 0), colors, St);
+const rebuiltGpuGraphs = box.children.filter(child => child instanceof St.DrawingArea);
+assert(rebuiltGpuGraphs.length === 2 && rebuiltGpuGraphs.every(graph => !remaining.includes(graph)),
+    'Turning GPU graphs back on creates live actors');
+box.destroy();
+assert(rebuiltGpuGraphs.every(graph => graph.destroyed), 'Destroying the GPU parent destroys every graph');
+
+const graphBox = new Actor();
+const cpuInfo = { cpu: 'AMD', core: 1,
+    coreDetails: [{ index: 0, name: 'Core-00', load: 15, speed: 1000, temp: '48' }],
+    loadHistory: [[15]], temperatureHistory: [[48]] };
+updateCPUData({ coreBox: graphBox, animationsEnabled: false }, cpuInfo, colors, St);
+const cpuGraphs = graphBox.children.filter(child => child instanceof St.DrawingArea);
+assert(cpuGraphs.length === 2, 'CPU creates load and temperature graphs');
+updateCPUData({ coreBox: graphBox, showGraph: false }, cpuInfo, colors, St);
+assert(cpuGraphs.every(graph => graph.destroyed), 'Turning CPU graphs off destroys the detached cached actors');
+updateCPUData({ coreBox: graphBox, animationsEnabled: false }, cpuInfo, colors, St);
+const rebuiltCpuGraphs = graphBox.children.filter(child => child instanceof St.DrawingArea);
+assert(rebuiltCpuGraphs.length === 2 && rebuiltCpuGraphs.every(graph => !cpuGraphs.includes(graph)),
+    'Turning CPU graphs back on creates live actors');
+graphBox.destroy();
+assert(rebuiltCpuGraphs.every(graph => graph.destroyed), 'Destroying the CPU parent destroys every graph');
 const cpuBox = new Actor();
 updateCPUData({ coreBox: cpuBox, showGraph: false }, { cpu: 'ARM', core: 1,
     coreDetails: [{ index: 0, name: 'Core-00', load: 15, speed: 1000, temp: 'N/A' }] }, colors, St);
